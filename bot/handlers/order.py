@@ -123,6 +123,11 @@ TEXTS: dict[str, str] = {
     ),
     "summary_item": "• {title} — {price} ₽ × {qty} = {line_total} ₽",
     "empty_cart": "🛒 Ваша корзина пуста, оформить заказ нельзя.\n" "Добавьте товары из каталога.",
+    "cart_no_opencart_products": (
+        "🛒 В корзине нет товаров из каталога сайта — заказ не попадёт в магазин. "
+        "Удалите устаревшие позиции и добавьте товары из каталога."
+    ),
+    "cart_removed_invalid": "Из корзины убраны товары, которых нет в каталоге сайта.",
     "cancelled": "✖️ Оформление заказа отменено.",
     "created": "✅ Заказ создан. Переходим к оплате…",
 }
@@ -393,6 +398,29 @@ async def handle_checkout_start(
             text=TEXTS["empty_cart"],
         )
         return
+
+    # Только товары с привязкой к OpenCart попадут в заказ на сайте
+    valid_items = [i for i in cart_items if i.product.opencart_product_id is not None]
+    if not valid_items:
+        await callback.bot.send_message(
+            chat_id=chat_id,
+            text=TEXTS["cart_no_opencart_products"],
+        )
+        return
+
+    # Удаляем из корзины позиции без opencart_product_id, чтобы заказ создался в OpenCart
+    if len(valid_items) < len(cart_items):
+        for item in cart_items:
+            if item.product.opencart_product_id is None:
+                db.add_to_cart(
+                    user_id=current_user.id,
+                    product_id=item.product.id,
+                    delta=-item.quantity,
+                )
+        await callback.bot.send_message(
+            chat_id=chat_id,
+            text=TEXTS["cart_removed_invalid"],
+        )
 
     last_orders = db.list_orders_for_user(user_id=current_user.id, limit=1)
     last_address: str | None = None

@@ -655,16 +655,22 @@ class Database:
     # Категории и товары
 
     def list_categories(self) -> list[Category]:
-        """Возвращает список всех категорий товаров.
+        """Возвращает категории, в которых есть хотя бы один активный товар.
+
+        Категории без товаров (или только с неактивными) в каталоге не показываются.
 
         Returns:
-            List[Category]: Список категорий.
+            List[Category]: Список категорий с товарами.
         """
-
         with self._connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id, slug, title FROM categories ORDER BY id ASC;",
+                """
+                SELECT DISTINCT c.id, c.slug, c.title
+                FROM categories c
+                INNER JOIN products p ON p.category_id = c.id AND p.is_active = 1
+                ORDER BY c.id ASC;
+                """,
             )
             rows = cursor.fetchall()
         return [
