@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import re
 from types import SimpleNamespace
 from typing import Final
 
@@ -31,8 +33,40 @@ TEXTS: dict[str, str] = {
 }
 
 PAGE_SIZE: Final[int] = 3
+# Лимит подписи к фото в Telegram
+CAPTION_MAX_LENGTH: Final[int] = 1024
 
 router = Router(name="catalog")
+
+
+def _strip_html(html_text: str, max_length: int = CAPTION_MAX_LENGTH) -> str:
+    """Убирает HTML-теги и лишние пробелы из описания товара для отображения в боте.
+
+    Args:
+        html_text: Строка с HTML (описание из OpenCart/сайта).
+        max_length: Максимальная длина результата (подпись Telegram — 1024).
+
+    Returns:
+        Очищенный текст без тегов.
+    """
+    if not html_text or not html_text.strip():
+        return ""
+    text = html_text.strip()
+    # <br>, <br/>, <p> — в перенос строки
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</p>\s*", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<p(?:\s[^>]*)?>", "", text, flags=re.IGNORECASE)
+    # Удаляем все оставшиеся теги
+    text = re.sub(r"<[^>]+>", "", text)
+    # Декодируем HTML-сущности (&nbsp;, &amp; и т.д.)
+    text = html.unescape(text)
+    # Схлопываем множественные пробелы и пустые строки
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.strip()
+    if len(text) > max_length:
+        text = text[: max_length - 3].rstrip() + "..."
+    return text
 
 
 def _get_db_from_message(message: Message) -> Database:
@@ -188,11 +222,14 @@ async def _send_product_card(
     """
 
     keyboard = build_product_actions_keyboard(product_id=product.id)
+    description_clean = _strip_html(product.description, max_length=2000)
     caption = TEXTS["product_card"].format(
         title=product.title,
-        description=product.description,
+        description=description_clean,
         price=product.price,
     )
+    if len(caption) > CAPTION_MAX_LENGTH:
+        caption = caption[: CAPTION_MAX_LENGTH - 3].rstrip() + "..."
     if callback.message is None:
         return
 
