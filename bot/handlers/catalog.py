@@ -70,13 +70,13 @@ def _strip_html(html_text: str, max_length: int = CAPTION_MAX_LENGTH) -> str:
 
 
 def _clean_title(raw_title: str) -> str:
-    """Очищает название товара от HTML-сущностей и лишних пробелов."""
+    """Очищает название товара от HTML/сущностей и лишних пробелов."""
 
     if not raw_title:
         return ""
-    text = html.unescape(raw_title)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    # Используем тот же HTML-стриппер, что и для описаний,
+    # но с меньшим лимитом длины; он удаляет все теги и декодирует сущности.
+    return _strip_html(raw_title, max_length=128)
 
 
 def _get_db_from_message(message: Message) -> Database:
