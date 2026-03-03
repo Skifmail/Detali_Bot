@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -47,7 +48,9 @@ class OpenCartClient:
 
         self._config = config or get_opencart_config()
         self._api_token: str | None = None
-        self._client: httpx.AsyncClient = httpx.AsyncClient(timeout=30.0)
+        # Используем синхронный httpx.Client и выполняем запросы в отдельном потоке,
+        # чтобы не блокировать event loop aiogram.
+        self._client: httpx.Client = httpx.Client(timeout=30.0)
 
     async def __aenter__(self) -> OpenCartClient:
         """Возвращает клиента для использования в контекстном менеджере."""
@@ -57,7 +60,7 @@ class OpenCartClient:
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         """Закрывает HTTP-клиент при выходе из контекста."""
 
-        await self._client.aclose()
+        await asyncio.to_thread(self._client.close)
 
     def _url(self, route: str) -> str:
         base = self._config.base_url.rstrip("/")
@@ -105,9 +108,9 @@ class OpenCartClient:
                 form_data.extend(_flatten_form(k, v))
 
         if method == "GET":
-            resp = await self._client.get(url)
+            resp = await asyncio.to_thread(self._client.get, url)
         else:
-            resp = await self._client.post(url, data=form_data)
+            resp = await asyncio.to_thread(self._client.post, url, data=form_data)
         try:
             body = resp.json()
         except Exception as e:
