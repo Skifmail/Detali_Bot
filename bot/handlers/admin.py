@@ -71,7 +71,7 @@ TEXTS: dict[str, str] = {
     "new_order_title": "🆕 Новый заказ\n\n",
     "order_cancelled_by_user_title": "❌ Пользователь отменил заказ\n\n",
     "sync_catalog_start": "🔄 Обновляю каталог из OpenCart…",
-    "sync_catalog_ok": "✅ Каталог обновлён из OpenCart.",
+    "sync_catalog_ok": "✅ Каталог обновлён из OpenCart.\n\n{summary}",
     "sync_catalog_fail": "❌ Не удалось обновить каталог: {error}",
     "users_header": "👥 Пользователи бота (всего {total}):",
     "users_line": "• id={id} tg={tg_id} | {name} | тел. {phone}",
@@ -80,6 +80,29 @@ TEXTS: dict[str, str] = {
 }
 
 router = Router(name="admin")
+
+
+def _format_catalog_summary(summary: list[tuple[str, int]]) -> str:
+    """Форматирует сводку синхронизации каталога: категория → количество товаров.
+
+    Args:
+        summary: Список пар (название категории, количество товаров).
+
+    Returns:
+        Строка с построчным перечислением для отправки в чат.
+    """
+    if not summary:
+        return "Нет категорий с товарами."
+    lines: list[str] = []
+    for name, count in summary:
+        if count == 1:
+            word = "товар"
+        elif 2 <= count <= 4:
+            word = "товара"
+        else:
+            word = "товаров"
+        lines.append(f"• {name}: {count} {word}")
+    return "\n".join(lines)
 
 
 class BroadcastForm(StatesGroup):
@@ -291,8 +314,9 @@ async def handle_admin_sync_catalog_message(message: Message) -> None:
     db = get_db_from_message(message)
     await message.answer(TEXTS["sync_catalog_start"])
     try:
-        await sync_catalog_from_opencart(db)
-        await message.answer(TEXTS["sync_catalog_ok"])
+        summary = await sync_catalog_from_opencart(db)
+        summary_text = _format_catalog_summary(summary)
+        await message.answer(TEXTS["sync_catalog_ok"].format(summary=summary_text))
     except Exception as e:
         logger.exception("Ошибка синхронизации каталога по запросу админа")
         await message.answer(
@@ -404,8 +428,9 @@ async def handle_admin_sync_catalog(callback: CallbackQuery) -> None:
     db = get_db_from_callback(callback)
     await callback.message.answer(TEXTS["sync_catalog_start"])
     try:
-        await sync_catalog_from_opencart(db)
-        await callback.message.answer(TEXTS["sync_catalog_ok"])
+        summary = await sync_catalog_from_opencart(db)
+        summary_text = _format_catalog_summary(summary)
+        await callback.message.answer(TEXTS["sync_catalog_ok"].format(summary=summary_text))
     except Exception as e:
         logger.exception("Ошибка синхронизации каталога по запросу админа")
         await callback.message.answer(

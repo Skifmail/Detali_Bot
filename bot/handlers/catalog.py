@@ -5,7 +5,7 @@ import re
 from typing import Final
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InputMediaPhoto, Message
@@ -298,8 +298,10 @@ async def handle_back_to_categories(
         for mid in old_ids:
             try:
                 await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
-            except (TelegramBadRequest, TypeError):
-                pass
+            except (TelegramBadRequest, TelegramNetworkError, TypeError):
+                # Сетевые и телеграм-ошибки при удалении старых сообщений
+                # не должны блокировать показ новой страницы.
+                continue
         try:
             await callback.message.delete()
         except TelegramBadRequest:
@@ -354,8 +356,8 @@ async def handle_back_to_categories(
         for mid in media_ids:
             try:
                 await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
-            except (TelegramBadRequest, TypeError):
-                pass
+            except (TelegramBadRequest, TelegramNetworkError, TypeError):
+                continue
     else:
         await callback.bot.send_message(
             chat_id=callback.message.chat.id,
@@ -429,8 +431,8 @@ async def handle_products_page(
     for mid in old_ids:
         try:
             await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
-        except (TelegramBadRequest, TypeError):
-            pass
+        except (TelegramBadRequest, TelegramNetworkError, TypeError):
+            continue
 
     db: Database = callback.bot.db
     await _render_products_page(
@@ -473,8 +475,8 @@ async def handle_product_selected(
     for mid in message_ids:
         try:
             await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
-        except (TelegramBadRequest, TypeError):
-            pass
+        except (TelegramBadRequest, TelegramNetworkError, TypeError):
+            continue
     await state.update_data(catalog_message_ids=[], catalog_chat_id=None)
 
     db: Database = callback.bot.db

@@ -18,7 +18,7 @@ from bot.infrastructure.opencart_db import OpenCartDb
 DESCRIPTION_MAX_LENGTH: int = 5000
 
 
-async def sync_catalog_from_opencart(db: Database) -> None:
+async def sync_catalog_from_opencart(db: Database) -> list[tuple[str, int]]:
     """Загружает категории и товары из MySQL OpenCart в локальную БД бота.
 
     Сначала деактивирует все товары (is_active=0), затем для каждой категории
@@ -27,6 +27,9 @@ async def sync_catalog_from_opencart(db: Database) -> None:
 
     Args:
         db: Экземпляр Database (SQLite бота).
+
+    Returns:
+        Список пар (название категории, количество загруженных товаров).
 
     Raises:
         RuntimeError: Если не заданы конфиги OpenCart (БД или base_url).
@@ -51,7 +54,7 @@ async def sync_catalog_from_opencart(db: Database) -> None:
         )
 
     try:
-        await _run_sync(db, oc_db_config, base_url)
+        return await _run_sync(db, oc_db_config, base_url)
     except (pymysql.err.OperationalError, OSError) as e:
         logger.warning(
             "MySQL OpenCart недоступен (бот запущен не на хостинге?): {}. Каталог не обновлён.",
@@ -60,7 +63,7 @@ async def sync_catalog_from_opencart(db: Database) -> None:
         raise
 
 
-async def _run_sync(db: Database, oc_db_config: OpenCartDbConfig, base_url: str) -> None:
+async def _run_sync(db: Database, oc_db_config: OpenCartDbConfig, base_url: str) -> list[tuple[str, int]]:
     """Выполняет загрузку категорий и товаров из OpenCart в SQLite.
 
     Важно:
@@ -68,6 +71,9 @@ async def _run_sync(db: Database, oc_db_config: OpenCartDbConfig, base_url: str)
       Если соединение оборвётся, локальная БД бота не трогаем.
     - Только после успешного чтения деактивируем все товары в SQLite и
       начинаем апсертить новые данные.
+
+    Returns:
+        Список пар (название категории, количество загруженных товаров).
     """
     async with OpenCartDb(oc_db_config) as oc_db:
         categories = await oc_db.fetch_categories(parent_id=0)
@@ -88,14 +94,18 @@ async def _run_sync(db: Database, oc_db_config: OpenCartDbConfig, base_url: str)
         our_id = db.get_or_create_category_by_opencart_id(oc_id, name)
         oc_to_our[oc_id] = our_id
 
+    summary: list[tuple[str, int]] = []
     for cat in categories:
         oc_id_raw = cat.get("category_id")
         oc_id = int(oc_id_raw) if oc_id_raw is not None else 0
+        name_raw = cat.get("name")
+        cat_name = str(name_raw).strip() if name_raw is not None else ""
         our_cat_id = oc_to_our[oc_id]
         products = products_by_category.get(oc_id, [])
+        summary.append((cat_name or f"ID {oc_id}", len(products)))
         logger.debug(
             "Категория '{name}' (opencart_id={oc_id}): {count} товаров",
-            name=name,
+            name=cat_name,
             oc_id=oc_id,
             count=len(products),
         )
@@ -156,3 +166,4 @@ async def _run_sync(db: Database, oc_db_config: OpenCartDbConfig, base_url: str)
         "Синхронизация каталога OpenCart завершена: {cat_count} категорий, товары обновлены",
         cat_count=len(categories),
     )
+    return summary
