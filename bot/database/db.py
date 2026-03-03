@@ -669,6 +669,7 @@ class Database:
                 SELECT DISTINCT c.id, c.slug, c.title
                 FROM categories c
                 INNER JOIN products p ON p.category_id = c.id AND p.is_active = 1
+                    AND p.opencart_product_id IS NOT NULL
                 ORDER BY c.id ASC;
                 """,
             )
@@ -730,7 +731,8 @@ class Database:
                 """
                 SELECT COUNT(*)
                 FROM products
-                WHERE category_id = ? AND is_active = 1;
+                WHERE category_id = ? AND is_active = 1
+                    AND opencart_product_id IS NOT NULL;
                 """,
                 (category_id,),
             )
@@ -958,7 +960,7 @@ class Database:
         for row in rows:
             # Логирование сырых данных из БД для отладки оформления заказа
             raw_oc = row["opencart_product_id"] if "opencart_product_id" in row else "<нет колонки>"
-            logger.debug(
+            logger.info(
                 "get_cart: product_id={pid}, raw opencart_product_id={raw_oc}",
                 pid=row["product_id"],
                 raw_oc=raw_oc,

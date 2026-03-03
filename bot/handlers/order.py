@@ -128,6 +128,10 @@ TEXTS: dict[str, str] = {
         "🛒 В корзине нет товаров из каталога сайта — заказ не попадёт в магазин. "
         "Удалите устаревшие позиции и добавьте товары из каталога."
     ),
+    "cart_cleaned_no_valid": (
+        "🛒 В корзине не было товаров из каталога сайта. Устаревшие позиции удалены. "
+        "Добавьте товары из каталога заново."
+    ),
     "cart_removed_invalid": "Из корзины убраны товары, которых нет в каталоге сайта.",
     "cancelled": "✖️ Оформление заказа отменено.",
     "created": "✅ Заказ создан. Переходим к оплате…",
@@ -496,9 +500,17 @@ async def handle_checkout_start(
             user_id=current_user.id,
             total=len(cart_items),
         )
+        # Удаляем устаревшие позиции из корзины, чтобы пользователь мог добавить товары заново
+        for item in cart_items:
+            if item.product.opencart_product_id is None:
+                db.add_to_cart(
+                    user_id=current_user.id,
+                    product_id=item.product.id,
+                    delta=-item.quantity,
+                )
         await callback.bot.send_message(
             chat_id=chat_id,
-            text=TEXTS["cart_no_opencart_products"],
+            text=TEXTS["cart_cleaned_no_valid"],
         )
         return
 
