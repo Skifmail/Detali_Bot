@@ -956,6 +956,13 @@ class Database:
 
         items: list[CartItem] = []
         for row in rows:
+            # Логирование сырых данных из БД для отладки оформления заказа
+            raw_oc = row["opencart_product_id"] if "opencart_product_id" in row else "<нет колонки>"
+            logger.debug(
+                "get_cart: product_id={pid}, raw opencart_product_id={raw_oc}",
+                pid=row["product_id"],
+                raw_oc=raw_oc,
+            )
             product = self._row_to_product(row)
             items.append(
                 CartItem(

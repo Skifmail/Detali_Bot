@@ -470,9 +470,32 @@ async def handle_checkout_start(
         )
         return
 
+    # Подробное логирование для отладки: что в корзине и есть ли opencart_product_id
+    logger.info(
+        "Оформление заказа: user_id={user_id}, позиций в корзине={count}",
+        user_id=current_user.id,
+        count=len(cart_items),
+    )
+    for idx, item in enumerate(cart_items):
+        logger.info(
+            "  Корзина[{idx}]: product_id={product_id}, title={title!r}, "
+            "opencart_product_id={oc_id}, quantity={qty}",
+            idx=idx,
+            product_id=item.product.id,
+            title=(item.product.title or "")[:60],
+            oc_id=item.product.opencart_product_id,
+            qty=item.quantity,
+        )
+
     # Только товары с привязкой к OpenCart попадут в заказ на сайте
     valid_items = [i for i in cart_items if i.product.opencart_product_id is not None]
     if not valid_items:
+        logger.warning(
+            "Оформление заказа отклонено: в корзине нет ни одной позиции с opencart_product_id "
+            "(user_id={user_id}, всего позиций={total})",
+            user_id=current_user.id,
+            total=len(cart_items),
+        )
         await callback.bot.send_message(
             chat_id=chat_id,
             text=TEXTS["cart_no_opencart_products"],
