@@ -127,10 +127,12 @@ async def create_order_in_opencart(order: Order) -> int | None:
             )
             return None
         except Exception as e:  # noqa: BLE001
-            logger.error(
-                "Неожиданная ошибка при создании заказа id={} в OpenCart: {}",
+            # Логируем полную трассировку и тип исключения для точной диагностики.
+            logger.exception(
+                "Неожиданная ошибка при создании заказа id={} в OpenCart " "(type={exc_type}): {error}",
                 order.id,
-                e,
+                exc_type=type(e).__name__,
+                error=e,
             )
             return None
 
