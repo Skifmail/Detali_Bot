@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar as cal
+import html
 from collections.abc import Iterable
 from datetime import date, datetime
 from datetime import time as time_type
@@ -206,7 +207,9 @@ def build_products_grid_page_keyboard(
     """
     builder = InlineKeyboardBuilder()
     for idx, p in enumerate(products, start=1):
-        label = f"{idx}. {p.title}"
+        raw_title = p.title or ""
+        title = html.unescape(raw_title).strip()
+        label = f"{idx}. {title}"
         if len(label) > 60:
             label = label[:57] + "…"
         builder.button(

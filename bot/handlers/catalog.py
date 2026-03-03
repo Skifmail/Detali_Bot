@@ -69,6 +69,16 @@ def _strip_html(html_text: str, max_length: int = CAPTION_MAX_LENGTH) -> str:
     return text
 
 
+def _clean_title(raw_title: str) -> str:
+    """Очищает название товара от HTML-сущностей и лишних пробелов."""
+
+    if not raw_title:
+        return ""
+    text = html.unescape(raw_title)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
 def _get_db_from_message(message: Message) -> Database:
     """Возвращает экземпляр базы данных из контекста бота по сообщению.
 
@@ -164,26 +174,31 @@ async def _show_products_page(
     )
 
     # Фото товаров берутся с сайта (image_url при загрузке каталога из OpenCart).
-    photos_with_captions = [
-        (
-            p.image_url.strip(),
-            TEXTS["product_preview_caption"].format(
-                title=f"{idx}. {p.title}",
-                price=p.price,
+    photos_with_captions = []
+    for idx, p in enumerate(products_list, start=1):
+        photo_url = (p.image_url or "").strip()
+        if not photo_url:
+            continue
+        title_clean = _clean_title(p.title)
+        photos_with_captions.append(
+            (
+                photo_url,
+                TEXTS["product_preview_caption"].format(
+                    title=f"{idx}. {title_clean}",
+                    price=p.price,
+                ),
             ),
         )
-        for idx, p in enumerate(products_list, start=1)
-        if p.image_url and p.image_url.strip()
-    ]
     message_ids: list[int] = []
-    items_lines = [f"{i}. {p.title} — {p.price} ₽" for i, p in enumerate(products_list, start=1)]
-    choose_text = TEXTS["catalog_choose_product_no_photos"].format(items="\n".join(items_lines))
+    items_lines = [f"{i}. {_clean_title(p.title)} — {p.price} ₽" for i, p in enumerate(products_list, start=1)]
+    items_block = "\n".join(items_lines)
+    choose_text = TEXTS["catalog_choose_product_no_photos"].format(items=items_block)
     if photos_with_captions:
         media = [InputMediaPhoto(type="photo", media=ph, caption=cap) for ph, cap in photos_with_captions]
         try:
             sent = await bot.send_media_group(chat_id=chat_id, media=media)
             message_ids = [m.message_id for m in sent]
-            choose_text = TEXTS["catalog_choose_product"]
+            choose_text = TEXTS["catalog_choose_product"] + "\n\n" + items_block
         except TelegramBadRequest as e:
             logger.warning(
                 "Не удалось отправить медиа-группу категории category_id={}: {}",
@@ -222,9 +237,10 @@ async def _send_product_card(
     """
 
     keyboard = build_product_actions_keyboard(product_id=product.id)
+    title_clean = _clean_title(product.title)
     description_clean = _strip_html(product.description, max_length=2000)
     caption = TEXTS["product_card"].format(
-        title=product.title,
+        title=title_clean,
         description=description_clean,
         price=product.price,
     )
