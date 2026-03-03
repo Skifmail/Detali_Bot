@@ -278,8 +278,8 @@ async def handle_add_to_cart(
     db = get_db_from_callback(callback)
     product_id = callback_data.product_id
     product = db.get_product(product_id=product_id)
-    if product is None or product.opencart_product_id is None:
-        # Товар больше неактивен или не привязан к OpenCart — не даём добавить «битую» позицию.
+    if product is None:
+        # Товар больше неактивен или не найден — не даём добавить «битую» позицию.
         await callback.answer("Этот товар больше недоступен в каталоге.", show_alert=True)
         return
 
