@@ -241,10 +241,12 @@ async def _send_product_card(
             product.id,
             e,
         )
-        # В запасном варианте отправляем текст без HTML-разметки,
-        # чтобы исключить любые проблемы с разбором сущностей Telegram.
+        # В запасном варианте дополнительно убираем всю HTML-разметку из текста,
+        # чтобы исключить любые проблемы с разбором сущностей Telegram
+        # и не показывать пользователю «сырые» теги.
+        caption_plain = _strip_html(caption, max_length=CAPTION_MAX_LENGTH)
         await callback.message.answer(
-            caption + "\n\n(Изображение временно недоступно.)",
+            caption_plain + "\n\n(Изображение временно недоступно.)",
             reply_markup=keyboard,
             parse_mode=None,
         )
