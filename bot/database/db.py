@@ -1582,5 +1582,6 @@ def create_default_database() -> Database:
 
     base_dir = Path(__file__).resolve().parent
     db_path = base_dir / DB_FILENAME
+    logger.info("Инициализация SQLite бота: db_path={db_path}", db_path=db_path)
     config = DatabaseConfig(db_path=db_path)
     return Database(config=config)
