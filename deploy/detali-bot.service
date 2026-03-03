@@ -1,0 +1,16 @@
+[Unit]
+Description=Detali Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Detali_Bot
+EnvironmentFile=/root/Detali_Bot/bot/.env
+ExecStart=/root/Detali_Bot/.venv/bin/python -m bot.main
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

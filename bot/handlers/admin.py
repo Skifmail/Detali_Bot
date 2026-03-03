@@ -16,13 +16,14 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from loguru import logger
 
 from ..database.db import Database
-from ..database.models import Order, OrderStatus, StatsSummary
+from ..database.models import Order, OrderStatus, StatsSummary, User
 from ..keyboards.kb import (
     TEXTS as KB_TEXTS,
 )
 from ..keyboards.kb import (
     build_admin_main_keyboard,
     build_admin_more_keyboard,
+    build_admin_more_reply_keyboard,
     build_admin_order_details_keyboard,
     build_admin_orders_keyboard,
     build_admin_status_change_keyboard,
@@ -69,6 +70,10 @@ TEXTS: dict[str, str] = {
     "sync_catalog_start": "🔄 Обновляю каталог из OpenCart…",
     "sync_catalog_ok": "✅ Каталог обновлён из OpenCart.",
     "sync_catalog_fail": "❌ Не удалось обновить каталог: {error}",
+    "users_header": "👥 Пользователи бота (всего {total}):",
+    "users_line": "• id={id} tg={tg_id} | {name} | тел. {phone}",
+    "users_empty": "👥 Пользователей пока нет.",
+    "users_more": "\n\n… показаны последние {limit} из {total}.",
 }
 
 router = Router(name="admin")
@@ -323,13 +328,115 @@ async def handle_admin_broadcast_message(
 
 @router.message(F.text == KB_TEXTS["menu_more"])
 async def handle_admin_more_message(message: Message) -> None:
-    """Показ дополнительного меню (Обновить каталог и т.д.) по кнопке «Ещё»."""
+    """Меняет нижнее меню на дополнительные действия по кнопке «Ещё»."""
     if not _is_admin(message):
         return
     await message.answer(
         "Дополнительные действия:",
-        reply_markup=build_admin_more_keyboard(),
+        reply_markup=build_admin_more_reply_keyboard(),
     )
+
+
+@router.message(F.text == KB_TEXTS["menu_sync_catalog"])
+async def handle_admin_sync_catalog_message(message: Message) -> None:
+    """Запускает синхронизацию каталога по кнопке «Обновить каталог» в нижнем меню."""
+    if not _is_admin(message):
+        return
+    db = _get_db_from_message(message)
+    await message.answer(TEXTS["sync_catalog_start"])
+    try:
+        await sync_catalog_from_opencart(db)
+        await message.answer(TEXTS["sync_catalog_ok"])
+    except Exception as e:
+        logger.exception("Ошибка синхронизации каталога по запросу админа")
+        await message.answer(
+            TEXTS["sync_catalog_fail"].format(error=str(e)),
+        )
+
+
+@router.message(F.text == KB_TEXTS["menu_users"])
+async def handle_admin_users_message(message: Message) -> None:
+    """Показывает список пользователей по кнопке «Пользователи» в нижнем меню."""
+    if not _is_admin(message):
+        return
+    db = _get_db_from_message(message)
+    total = db.count_users()
+    limit = 50
+    users = db.list_users(limit=limit)
+    text = _format_users_message(users, total, limit)
+    await message.answer(text)
+
+
+@router.message(F.text == KB_TEXTS["back"])
+async def handle_admin_back_reply(message: Message) -> None:
+    """Возврат в главное меню по кнопке «Назад» в нижнем меню (доп. действия)."""
+    is_admin = _is_admin(message)
+    await message.answer(
+        "🏠 Главное меню.",
+        reply_markup=build_main_menu_keyboard(is_admin=is_admin),
+    )
+
+
+def _format_users_message(users: list[User], total: int, limit: int) -> str:
+    """Формирует текст сообщения со списком пользователей (до 4096 символов)."""
+    if not users:
+        return TEXTS["users_empty"]
+    lines: list[str] = []
+    for u in users:
+        name = " ".join(filter(None, [u.first_name, u.last_name])).strip() or "—"
+        phone = u.phone or "—"
+        lines.append(TEXTS["users_line"].format(id=u.id, tg_id=u.tg_id, name=name, phone=phone))
+    text = TEXTS["users_header"].format(total=total) + "\n\n" + "\n".join(lines)
+    if total > limit:
+        text += TEXTS["users_more"].format(limit=limit, total=total)
+    if len(text) > 4000:
+        text = text[:3997] + "\n…"
+    return text
+
+
+@router.callback_query(F.data == "admin:users")
+async def handle_admin_users(callback: CallbackQuery) -> None:
+    """Показывает список пользователей бота по кнопке «Пользователи» в меню «Ещё»."""
+    await callback.answer()
+    if not _is_admin_callback(callback) or callback.message is None:
+        return
+    db = _get_db_from_callback(callback)
+    total = db.count_users()
+    limit = 50
+    users = db.list_users(limit=limit)
+    text = _format_users_message(users, total, limit)
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(
+        InlineKeyboardButton(
+            text=TEXTS["back"],
+            callback_data="admin:back_more",
+        ),
+    )
+    try:
+        await callback.message.edit_text(
+            text=text,
+            reply_markup=keyboard.as_markup(),
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            text=text,
+            reply_markup=keyboard.as_markup(),
+        )
+
+
+@router.callback_query(F.data == "admin:back_more")
+async def handle_admin_back_more(callback: CallbackQuery) -> None:
+    """Возврат из экрана «Пользователи» в меню «Дополнительные действия»."""
+    await callback.answer()
+    if not _is_admin_callback(callback) or callback.message is None:
+        return
+    try:
+        await callback.message.edit_text(
+            text="Дополнительные действия:",
+            reply_markup=build_admin_more_keyboard(),
+        )
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data == "admin:sync_catalog")

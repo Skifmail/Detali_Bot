@@ -43,10 +43,21 @@ cd bot && python -m bot.main
 
 При запуске из корня подхватится `bot/.env`, если он есть.
 
-### 2.1. Постоянная работа (systemd / supervisor / screen)
+### 2.1. Постоянная работа (systemd)
 
-- Запускать бота как долгоживущий процесс (systemd unit, supervisor, screen/tmux), а не разовым cron.
-- Пример systemd unit можно положить в `deploy/detali-bot.service` (путь к проекту и пользователю подставить свои).
+- Запускать бота как долгоживущий процесс (systemd unit), а не разовым cron.
+- Готовый unit: `deploy/detali-bot.service`. На сервере:
+  1. Подставить в unit путь к проекту и пользователю (по умолчанию `/root/Detali_Bot`, пользователь `root`).
+  2. Убедиться, что в проекте есть виртуальное окружение: из корня проекта выполнить `uv sync` (появится `.venv/`). В unit используется `.venv/bin/python`.
+  3. Скопировать unit и включить сервис:
+     ```bash
+     sudo cp deploy/detali-bot.service /etc/systemd/system/
+     sudo systemctl daemon-reload
+     sudo systemctl enable detali-bot
+     sudo systemctl start detali-bot
+     sudo systemctl status detali-bot
+     ```
+- В unit должна быть секция `[Install]` с `WantedBy=multi-user.target`, и в `[Service]` — строка `ExecStart=...`. Файл должен начинаться с `[Unit]` (без пустой строки или лишнего текста в начале).
 
 ### 2.2. Docker
 
@@ -58,7 +69,33 @@ cd bot && python -m bot.main
 
 ---
 
-## 3. После деплоя
+## 3. Обновление бота на сервере
+
+После изменений в коде (локально или через репозиторий):
+
+1. На сервере перейти в каталог проекта и подтянуть изменения:
+   ```bash
+   cd /root/Detali_Bot
+   git pull
+   ```
+   (Если код заливается без git — скопировать изменённые файлы на сервер вручную.)
+
+2. При необходимости обновить зависимости:
+   ```bash
+   uv sync
+   ```
+
+3. Перезапустить сервис:
+   ```bash
+   sudo systemctl restart detali-bot
+   sudo systemctl status detali-bot
+   ```
+
+БД SQLite и `bot/.env` при этом не трогаются — данные и настройки сохраняются.
+
+---
+
+## 4. После деплоя
 
 - Открыть бота в Telegram, отправить `/start`.
 - Зайти в каталог — товары должны подтянуться из OpenCart (если MySQL доступен и `SKIP_OPENCART_SYNC` не установлен).
@@ -66,7 +103,7 @@ cd bot && python -m bot.main
 
 ---
 
-## 4. Важно
+## 5. Важно
 
 - Файлы **`.env`** и **`bot/.env`** в `.gitignore` — в репозиторий не попадают. На сервере их создают вручную из `bot/.env.example`.
 - SQLite (`bot/database/bot.sqlite3`) хранит каталог, заказы, пользователей. При деплое в Docker нужен volume, чтобы данные не терялись при пересоздании контейнера.

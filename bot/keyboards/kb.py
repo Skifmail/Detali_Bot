@@ -30,6 +30,8 @@ TEXTS: dict[str, str] = {
     "menu_stats": "📊 Статистика",
     "menu_broadcast": "📣 Рассылка",
     "menu_more": "Ещё",
+    "menu_sync_catalog": "🔄 Обновить каталог",
+    "menu_users": "👥 Пользователи",
     "back": "← Назад",
     "start_over": "🏠 Главное меню",
     "cart_checkout": "🧾 Оформить заказ",
@@ -71,6 +73,19 @@ def build_back_to_main_menu_keyboard() -> ReplyKeyboardMarkup:
 
     builder = ReplyKeyboardBuilder()
     builder.row(KeyboardButton(text=TEXTS["start_over"]))
+    return builder.as_markup(resize_keyboard=True)
+
+
+def build_admin_more_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Создаёт нижнюю (reply) клавиатуру меню «Ещё»: дополнительные действия и Назад.
+
+    Returns:
+        ReplyKeyboardMarkup: Клавиатура с кнопками Обновить каталог, Пользователи, Назад.
+    """
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text=TEXTS["menu_sync_catalog"]))
+    builder.row(KeyboardButton(text=TEXTS["menu_users"]))
+    builder.row(KeyboardButton(text=TEXTS["back"]))
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -699,13 +714,19 @@ def build_admin_more_keyboard() -> InlineKeyboardMarkup:
     """Создаёт инлайн-клавиатуру для кнопки «Ещё» в меню админа.
 
     Returns:
-        InlineKeyboardMarkup: Кнопки «Обновить каталог» и «Назад».
+        InlineKeyboardMarkup: Кнопки «Обновить каталог», «Пользователи» и «Назад».
     """
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(
             text="🔄 Обновить каталог",
             callback_data="admin:sync_catalog",
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="👥 Пользователи",
+            callback_data="admin:users",
         ),
     )
     builder.row(

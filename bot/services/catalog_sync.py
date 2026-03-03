@@ -34,7 +34,7 @@ async def sync_catalog_from_opencart(db: Database) -> None:
             "Синхронизация каталога пропущена: не задана конфигурация БД OpenCart — {}",
             e,
         )
-        return
+        raise
 
     try:
         oc_api_config = get_opencart_config()
@@ -45,8 +45,6 @@ async def sync_catalog_from_opencart(db: Database) -> None:
         logger.warning("Синхронизация каталога: OPENCART_BASE_URL не задан, " "URL изображений товаров будет пустым.")
         base_url = ""
 
-    db.deactivate_all_products_for_sync()
-
     try:
         await _run_sync(db, oc_db_config, base_url)
     except (pymysql.err.OperationalError, OSError) as e:
@@ -54,11 +52,13 @@ async def sync_catalog_from_opencart(db: Database) -> None:
             "MySQL OpenCart недоступен (бот запущен не на хостинге?): {}. Каталог не обновлён.",
             e,
         )
+        raise
 
 
 async def _run_sync(db: Database, oc_db_config: OpenCartDbConfig, base_url: str) -> None:
     """Выполняет загрузку категорий и товаров из OpenCart в SQLite."""
     async with OpenCartDb(oc_db_config) as oc_db:
+        db.deactivate_all_products_for_sync()
         categories = await oc_db.fetch_categories(parent_id=0)
         oc_to_our: dict[int, int] = {}
         for cat in categories:

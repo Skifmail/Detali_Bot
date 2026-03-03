@@ -481,6 +481,41 @@ class Database:
                 (first_name or None, last_name or None, phone, user_id),
             )
 
+    def list_users(self, limit: int = 100, offset: int = 0) -> list[User]:
+        """Возвращает список пользователей для админки (последние сначала).
+
+        Args:
+            limit (int): Максимальное количество записей.
+            offset (int): Смещение для постраничного вывода.
+
+        Returns:
+            list[User]: Список пользователей.
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM users
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?;
+                """,
+                (limit, offset),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_user(row) for row in rows]
+
+    def count_users(self) -> int:
+        """Возвращает общее количество пользователей в БД.
+
+        Returns:
+            int: Число пользователей.
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) AS cnt FROM users;")
+            row = cursor.fetchone()
+        return int(row["cnt"])
+
     def get_all_user_tg_ids(self) -> list[int]:
         """Возвращает Telegram ID всех пользователей.
 
