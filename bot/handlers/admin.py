@@ -28,6 +28,7 @@ from ..keyboards.kb import (
     build_admin_status_change_keyboard,
     build_main_menu_keyboard,
 )
+from ..services.catalog_sync import sync_catalog_from_opencart
 
 TEXTS: dict[str, str] = {
     "not_admin": "⛔ У вас нет доступа к админ-панели.",
@@ -65,6 +66,9 @@ TEXTS: dict[str, str] = {
     "broadcast_cancelled": "❌ Рассылка отменена.",
     "new_order_title": "🆕 Новый заказ\n\n",
     "order_cancelled_by_user_title": "❌ Пользователь отменил заказ\n\n",
+    "sync_catalog_start": "🔄 Обновляю каталог из OpenCart…",
+    "sync_catalog_ok": "✅ Каталог обновлён из OpenCart.",
+    "sync_catalog_fail": "❌ Не удалось обновить каталог: {error}",
 }
 
 router = Router(name="admin")
@@ -319,13 +323,35 @@ async def handle_admin_broadcast_message(
 
 @router.message(F.text == KB_TEXTS["menu_more"])
 async def handle_admin_more_message(message: Message) -> None:
-    """Показ дополнительного меню (Добавить товар и т.д.) по кнопке «Ещё»."""
+    """Показ дополнительного меню (Обновить каталог и т.д.) по кнопке «Ещё»."""
     if not _is_admin(message):
         return
     await message.answer(
         "Дополнительные действия:",
         reply_markup=build_admin_more_keyboard(),
     )
+
+
+@router.callback_query(F.data == "admin:sync_catalog")
+async def handle_admin_sync_catalog(callback: CallbackQuery) -> None:
+    """Запускает синхронизацию каталога из OpenCart по кнопке в админке.
+
+    Тестовый товар и старые записи деактивируются; активными остаются
+    только товары, подтянутые из БД сайта.
+    """
+    await callback.answer()
+    if not _is_admin_callback(callback) or callback.message is None:
+        return
+    db = _get_db_from_callback(callback)
+    await callback.message.answer(TEXTS["sync_catalog_start"])
+    try:
+        await sync_catalog_from_opencart(db)
+        await callback.message.answer(TEXTS["sync_catalog_ok"])
+    except Exception as e:
+        logger.exception("Ошибка синхронизации каталога по запросу админа")
+        await callback.message.answer(
+            TEXTS["sync_catalog_fail"].format(error=str(e)),
+        )
 
 
 @router.callback_query(F.data == "nav:back_main")

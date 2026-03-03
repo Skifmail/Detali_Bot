@@ -699,9 +699,15 @@ def build_admin_more_keyboard() -> InlineKeyboardMarkup:
     """Создаёт инлайн-клавиатуру для кнопки «Ещё» в меню админа.
 
     Returns:
-        InlineKeyboardMarkup: Кнопка «Назад».
+        InlineKeyboardMarkup: Кнопки «Обновить каталог» и «Назад».
     """
     builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="🔄 Обновить каталог",
+            callback_data="admin:sync_catalog",
+        ),
+    )
     builder.row(
         InlineKeyboardButton(
             text=TEXTS["back"],
