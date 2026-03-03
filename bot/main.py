@@ -13,8 +13,7 @@ from loguru import logger
 
 from .core.logging import setup_logging
 from .database.db import create_default_database
-from .handlers import account, admin, cart, catalog, order, payment
-from .keyboards.kb import TEXTS as KB_TEXTS
+from .handlers import account, admin, cart, catalog, order, payment, start
 from .middlewares.user import UserMiddleware
 from .services.catalog_sync import sync_catalog_from_opencart
 
@@ -68,7 +67,8 @@ async def main() -> None:
 
     setup_logging()
     load_dotenv()
-    # Поддержка запуска из корня проекта: подгружаем bot/.env
+    # Поддержка запуска из корня проекта: дополнительно подгружаем bot/.env.
+    # Переменные, уже заданные, не переопределяются (override=False по умолчанию).
     bot_dir = Path(__file__).resolve().parent
     load_dotenv(bot_dir / ".env")
 
@@ -90,64 +90,29 @@ async def main() -> None:
             logger.exception("Ошибка синхронизации каталога из OpenCart, бот запущен с текущими данными")
     else:
         logger.info("Синхронизация каталога пропущена (SKIP_OPENCART_SYNC)")
-    if skip_sync or not db.list_categories():
-        db.seed_demo_catalog_if_empty()
+    db.seed_demo_catalog_if_empty()
 
     bot = Bot(
         token=bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    # сохраняем контекст на объекте бота, чтобы использовать его в хендлерах
-    bot.db = db
-    bot.admin_ids = _load_admin_ids()
 
     dp = Dispatcher()
+    # Регистрируем зависимости в диспетчере для последующей инъекции в хэндлеры и мидлвари.
+    dp["db"] = db
+    dp["admin_ids"] = _load_admin_ids()
+    # Временный бридж для существующего кода, использующего bot.db / bot.admin_ids.
+    bot.db = db
+    bot.admin_ids = dp["admin_ids"]
     dp.update.middleware(UserMiddleware())
 
+    dp.include_router(start.router)
     dp.include_router(catalog.router)
     dp.include_router(cart.router)
     dp.include_router(order.router)
     dp.include_router(payment.router)
     dp.include_router(account.router)
     dp.include_router(admin.router)
-
-    from aiogram import F
-    from aiogram.types import Message
-
-    @dp.message(F.text.in_({"/start", KB_TEXTS["start_over"]}))
-    async def handle_start_and_main_menu(message: Message) -> None:
-        """Обрабатывает /start и кнопку главного меню.
-
-        Args:
-            message (Message): Сообщение пользователя.
-
-        Returns:
-            None: Ничего не возвращает.
-        """
-
-        from .keyboards.kb import build_main_menu_keyboard
-
-        text = (message.text or "").strip()
-        is_admin = message.from_user.id in getattr(bot, "admin_ids", set())
-        keyboard = build_main_menu_keyboard(is_admin=is_admin)
-
-        if text == "/start":
-            if is_admin:
-                welcome = (
-                    "🌸 Добро пожаловать в демо-бот floraldetails.ru!\n\n"
-                    "Используйте меню: Каталог, Заказы, Статистика, Рассылка, Ещё."
-                )
-            else:
-                welcome = (
-                    "🌸 Добро пожаловать в демо-бот floraldetails.ru!\n\n"
-                    "Используйте меню ниже, чтобы посмотреть каталог, корзину и личный кабинет."
-                )
-            await message.answer(welcome, reply_markup=keyboard)
-        else:
-            await message.answer(
-                "🏠 Возвращаемся в главное меню.",
-                reply_markup=keyboard,
-            )
 
     await _set_bot_commands(bot)
     logger.info("Запуск бота floraldetails demo")

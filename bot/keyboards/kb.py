@@ -14,6 +14,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
+from ..callback_data import CartAddCallback, CartItemCallback
 from ..database.models import (
     Category,
     OrderStatus,
@@ -53,15 +54,16 @@ def build_main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """
     builder = ReplyKeyboardBuilder()
     builder.row(KeyboardButton(text=TEXTS["menu_catalog"]))
-    if not is_admin:
-        builder.row(KeyboardButton(text=TEXTS["menu_cart"]))
-        builder.row(KeyboardButton(text=TEXTS["menu_account"]))
     if is_admin:
         builder.row(KeyboardButton(text=TEXTS["menu_orders"]))
         builder.row(KeyboardButton(text=TEXTS["menu_stats"]))
         builder.row(KeyboardButton(text=TEXTS["menu_broadcast"]))
         builder.row(KeyboardButton(text=TEXTS["menu_more"]))
-    builder.adjust(2)
+        builder.adjust(2)
+    else:
+        builder.row(KeyboardButton(text=TEXTS["menu_cart"]))
+        builder.row(KeyboardButton(text=TEXTS["menu_account"]))
+        builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -129,58 +131,7 @@ def build_product_preview_keyboard(product_id: int) -> InlineKeyboardMarkup:
         ),
         InlineKeyboardButton(
             text="🛒 В корзину",
-            callback_data=f"cart:add:{product_id}",
-        ),
-    )
-    return builder.as_markup()
-
-
-def build_products_pagination_only_keyboard(
-    category_id: int,
-    page: int,
-    page_size: int,
-    total_count: int,
-) -> InlineKeyboardMarkup:
-    """Клавиатура только навигации по страницам (без кнопок товаров).
-
-    Args:
-        category_id (int): Идентификатор категории.
-        page (int): Номер текущей страницы (0-индекс).
-        page_size (int): Размер страницы.
-        total_count (int): Всего товаров в категории.
-
-    Returns:
-        InlineKeyboardMarkup: Инлайн-клавиатура Назад / Вперёд / К категориям.
-    """
-
-    builder = InlineKeyboardBuilder()
-    max_page = max((total_count - 1) // page_size, 0)
-    has_prev = page > 0
-    has_next = page < max_page
-
-    nav_buttons: list[InlineKeyboardButton] = []
-    if has_prev:
-        nav_buttons.append(
-            InlineKeyboardButton(
-                text="◀️ Назад",
-                callback_data=f"page:{category_id}:{page-1}",
-            ),
-        )
-    if has_next:
-        nav_buttons.append(
-            InlineKeyboardButton(
-                text="▶️ Вперёд",
-                callback_data=f"page:{category_id}:{page+1}",
-            ),
-        )
-
-    if nav_buttons:
-        builder.row(*nav_buttons)
-
-    builder.row(
-        InlineKeyboardButton(
-            text=TEXTS["back"],
-            callback_data="nav:back_categories",
+            callback_data=CartAddCallback(product_id=product_id).pack(),
         ),
     )
     return builder.as_markup()
@@ -263,7 +214,7 @@ def build_product_actions_keyboard(product_id: int) -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(
             text="🛒 В корзину",
-            callback_data=f"cart:add:{product_id}",
+            callback_data=CartAddCallback(product_id=product_id).pack(),
         ),
     )
     builder.row(
@@ -322,15 +273,15 @@ def build_cart_item_controls_keyboard(
     builder.row(
         InlineKeyboardButton(
             text="➖",
-            callback_data=f"cart:item:{cart_item_id}:dec",
+            callback_data=CartItemCallback(cart_item_id=cart_item_id, action="dec").pack(),
         ),
         InlineKeyboardButton(
             text="➕",
-            callback_data=f"cart:item:{cart_item_id}:inc",
+            callback_data=CartItemCallback(cart_item_id=cart_item_id, action="inc").pack(),
         ),
         InlineKeyboardButton(
             text="❌ Удалить",
-            callback_data=f"cart:item:{cart_item_id}:remove",
+            callback_data=CartItemCallback(cart_item_id=cart_item_id, action="remove").pack(),
         ),
     )
     return builder.as_markup()
@@ -408,21 +359,24 @@ def build_delivery_choice_keyboard(
     return builder.as_markup()
 
 
-MONTH_NAMES: tuple[str, ...] = (
-    "",
-    "Январь",
-    "Февраль",
-    "Март",
-    "Апрель",
-    "Май",
-    "Июнь",
-    "Июль",
-    "Август",
-    "Сентябрь",
-    "Октябрь",
-    "Ноябрь",
-    "Декабрь",
-)
+MONTH_NAMES: dict[int, str] = {
+    1: "Январь",
+    2: "Февраль",
+    3: "Март",
+    4: "Апрель",
+    5: "Май",
+    6: "Июнь",
+    7: "Июль",
+    8: "Август",
+    9: "Сентябрь",
+    10: "Октябрь",
+    11: "Ноябрь",
+    12: "Декабрь",
+}
+
+DELIVERY_HOUR_START: int = 9
+DELIVERY_HOUR_END: int = 19
+DELIVERY_SLOT_MINUTES: int = 30
 
 
 def build_delivery_calendar_keyboard(
@@ -452,7 +406,7 @@ def build_delivery_calendar_keyboard(
             callback_data=(f"order:date_month:{prev_year}-{prev_month:02d}" if can_go_prev else "noop"),
         ),
         InlineKeyboardButton(
-            text=f"{MONTH_NAMES[month]} {year}",
+            text=f"{MONTH_NAMES.get(month, '')} {year}",
             callback_data="noop",
         ),
         InlineKeyboardButton(
@@ -468,9 +422,9 @@ def build_delivery_calendar_keyboard(
     month_days = cal.monthcalendar(year, month)
     for week in month_days:
         row_buttons: list[InlineKeyboardButton] = []
-        for _weekday, day in enumerate(week):
+        for day in week:
             if day == 0:
-                row_buttons.append(InlineKeyboardButton(text=" ", callback_data="noop"))
+                row_buttons.append(InlineKeyboardButton(text="·", callback_data="noop"))
             else:
                 d = date(year, month, day)
                 if d < today:
@@ -507,9 +461,9 @@ def build_delivery_time_keyboard(
     now = datetime.now().time()
     today = date.today()
 
-    for hour in range(9, 20):
-        for minute in (0, 30):
-            if hour == 19 and minute == 30:
+    for hour in range(DELIVERY_HOUR_START, DELIVERY_HOUR_END + 1):
+        for minute in range(0, 60, DELIVERY_SLOT_MINUTES):
+            if hour == DELIVERY_HOUR_END and minute >= DELIVERY_SLOT_MINUTES:
                 break
             if selected_date == today:
                 slot_time = time_type(hour, minute)

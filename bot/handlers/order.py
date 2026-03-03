@@ -30,6 +30,7 @@ from ..keyboards.kb import (
     build_recipient_choice_keyboard,
     build_saved_recipients_keyboard,
 )
+from ..utils import get_db_from_callback, get_db_from_message, normalize_phone
 
 # Варианты доставки: (slug, название, стоимость ₽, сообщение о сроках)
 DELIVERY_OPTIONS: list[tuple[str, str, int, str]] = [
@@ -137,6 +138,7 @@ PHONE_REGEX = re.compile(r"^(?:\+7|8)\d{10}$")
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 # ДД.ММ.ГГГГ ЧЧ:ММ или ДД.ММ.ГГГГ ЧЧ:ММ (с возможными пробелами)
 DELIVERY_DATETIME_REGEX = re.compile(r"^\s*(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})\s*$")
+PICKUP_ADDRESS = "Самовывоз"
 
 router = Router(name="order")
 
@@ -159,34 +161,6 @@ class OrderForm(StatesGroup):
     confirm = State()
 
 
-def _get_db_from_message(message: Message) -> Database:
-    """Возвращает экземпляр базы данных из контекста бота по сообщению.
-
-    Args:
-        message (Message): Сообщение Telegram.
-
-    Returns:
-        Database: Экземпляр базы данных.
-    """
-
-    db: Database = message.bot.db
-    return db
-
-
-def _get_db_from_callback(callback: CallbackQuery) -> Database:
-    """Возвращает экземпляр базы данных из контекста бота по callback-запросу.
-
-    Args:
-        callback (CallbackQuery): Callback-запрос Telegram.
-
-    Returns:
-        Database: Экземпляр базы данных.
-    """
-
-    db: Database = callback.bot.db
-    return db
-
-
 def _build_phone_keyboard() -> ReplyKeyboardMarkup:
     """Создаёт клавиатуру для отправки контакта пользователя.
 
@@ -206,6 +180,103 @@ def _build_phone_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         one_time_keyboard=True,
     )
+
+
+def _build_delivery_options_for_kb() -> list[tuple[str, str]]:
+    """Строит пары (slug, текст) для клавиатуры выбора доставки."""
+
+    return [(slug, f"{label} — {cost} ₽" if cost else label) for slug, label, cost, _ in DELIVERY_OPTIONS]
+
+
+async def _build_and_show_summary(
+    *,
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    user_db_id: int,
+    email: str,
+) -> None:
+    """Формирует итоговую сводку заказа и показывает её пользователю.
+
+    Args:
+        target (Message | CallbackQuery): Куда отвечать/что редактировать.
+        state (FSMContext): Контекст FSM.
+        db (Database): Экземпляр базы данных.
+        user_db_id (int): Идентификатор пользователя в БД.
+        email (str): Выбранный email для чека.
+    """
+
+    # Читаем данные оформления
+    data = await state.get_data()
+    name = str(data.get("name") or "")
+    phone = str(data.get("phone") or "")
+    address = str(data.get("address") or "")
+    delivery_city = str(data.get("delivery_city", "") or "")
+    delivery_cost = int(data.get("delivery_cost", 0))
+    comment = data.get("comment")
+
+    # Корзина
+    cart_items = db.get_cart(user_id=user_db_id)
+    if not cart_items:
+        msg = target if isinstance(target, Message) else target.message
+        if msg is not None:
+            await msg.answer(TEXTS["empty_cart"])
+        await state.clear()
+        return
+
+    cart_total = sum(item.product.price * item.quantity for item in cart_items)
+    total = cart_total + delivery_cost
+    items_lines: list[str] = []
+    for item in cart_items:
+        line_total = item.product.price * item.quantity
+        items_lines.append(
+            TEXTS["summary_item"].format(
+                title=item.product.title,
+                price=item.product.price,
+                qty=item.quantity,
+                line_total=line_total,
+            ),
+        )
+
+    city_display = delivery_city.strip() if delivery_city else None
+    if not city_display:
+        options_for_kb = _build_delivery_options_for_kb()
+        msg = target if isinstance(target, Message) else target.message
+        if msg is not None:
+            await msg.answer(
+                TEXTS["ask_delivery_choice"],
+                reply_markup=build_delivery_choice_keyboard(options_for_kb),
+            )
+        await state.set_state(OrderForm.delivery_choice)
+        return
+
+    delivery_line = city_display if address == PICKUP_ADDRESS else f"{city_display} — {address}"
+    desired_datetime = str(data.get("desired_delivery_datetime", "—"))
+    summary_text = TEXTS["summary"].format(
+        items="\n".join(items_lines),
+        delivery_line=delivery_line,
+        delivery_cost=delivery_cost,
+        desired_datetime=desired_datetime,
+        name=name,
+        phone=phone,
+        email=email,
+        comment=comment or "—",
+        total=total,
+    )
+
+    await state.set_state(OrderForm.confirm)
+    kb = build_order_confirmation_keyboard()
+
+    if isinstance(target, Message):
+        await target.answer(summary_text, reply_markup=kb, parse_mode="HTML")
+    else:
+        msg = target.message
+        if msg is None:
+            return
+        try:
+            await msg.edit_text(summary_text, reply_markup=kb, parse_mode="HTML")
+        except TelegramBadRequest:
+            await msg.answer(summary_text, reply_markup=kb, parse_mode="HTML")
 
 
 def _parse_delivery_datetime(text: str) -> str | None:
@@ -258,7 +329,7 @@ async def _ask_delivery_choice(message: Message, state: FSMContext) -> None:
     Returns:
         None: Ничего не возвращает.
     """
-    options_for_kb = [(slug, f"{label} — {cost} ₽" if cost else label) for slug, label, cost, _ in DELIVERY_OPTIONS]
+    options_for_kb = _build_delivery_options_for_kb()
     await message.answer(
         TEXTS["ask_delivery_choice"],
         reply_markup=build_delivery_choice_keyboard(options_for_kb),
@@ -384,7 +455,7 @@ async def handle_checkout_start(
     if cart_message_ids:
         await state.update_data(cart_message_ids=[], cart_chat_id=None)
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     from_user = callback.from_user
     current_user = db.get_or_create_user(
         tg_id=from_user.id,
@@ -465,7 +536,7 @@ async def handle_recipient_self(
     if callback.message is None:
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     data = await state.get_data()
     user_db_id = int(data["user_db_id"])
     current_user = db.get_user(user_id=user_db_id)
@@ -549,7 +620,7 @@ async def handle_recipient_saved_list(
     if callback.message is None:
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     data = await state.get_data()
     user_db_id = int(data["user_db_id"])
     saved = db.list_saved_recipients(user_id=user_db_id)
@@ -601,7 +672,7 @@ async def handle_recipient_back(
     if callback.message is None:
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     data = await state.get_data()
     user_db_id = int(data["user_db_id"])
     saved = db.list_saved_recipients(user_id=user_db_id)
@@ -648,7 +719,7 @@ async def handle_recipient_picked(
     except ValueError:
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     data = await state.get_data()
     user_db_id = int(data["user_db_id"])
     recipient = db.get_saved_recipient(recipient_id=recipient_id, user_id=user_db_id)
@@ -661,7 +732,7 @@ async def handle_recipient_picked(
         phone=recipient.phone,
         suggested_address=recipient.address,
     )
-    options_for_kb = [(slug, f"{label} — {cost} ₽" if cost else label) for slug, label, cost, _ in DELIVERY_OPTIONS]
+    options_for_kb = _build_delivery_options_for_kb()
     try:
         await callback.message.edit_text(
             TEXTS["ask_delivery_choice"],
@@ -741,15 +812,8 @@ async def handle_phone_step(message: Message, state: FSMContext) -> None:
     else:
         phone_source = message.text or ""
 
-    digits_only = re.sub(r"\D", "", phone_source)
-    if len(digits_only) == 11 and digits_only.startswith("7"):
-        phone_normalized = f"+7{digits_only[1:]}"
-    elif len(digits_only) == 11 and digits_only.startswith("8"):
-        phone_normalized = f"8{digits_only[1:]}"
-    else:
-        phone_normalized = phone_source.strip().replace(" ", "")
-
-    if not PHONE_REGEX.match(phone_normalized):
+    phone_normalized = normalize_phone(phone_source)
+    if phone_normalized is None:
         await message.answer(TEXTS["invalid_phone"])
         return
 
@@ -794,15 +858,8 @@ async def handle_recipient_new_phone(message: Message, state: FSMContext) -> Non
     else:
         phone_source = message.text or ""
 
-    digits_only = re.sub(r"\D", "", phone_source)
-    if len(digits_only) == 11 and digits_only.startswith("7"):
-        phone_normalized = f"+7{digits_only[1:]}"
-    elif len(digits_only) == 11 and digits_only.startswith("8"):
-        phone_normalized = f"8{digits_only[1:]}"
-    else:
-        phone_normalized = phone_source.strip().replace(" ", "")
-
-    if not PHONE_REGEX.match(phone_normalized):
+    phone_normalized = normalize_phone(phone_source)
+    if phone_normalized is None:
         await message.answer(TEXTS["invalid_phone"])
         return
 
@@ -831,7 +888,7 @@ async def handle_address_step(message: Message, state: FSMContext) -> None:
     r_name = data.get("recipient_new_name")
     r_phone = data.get("recipient_new_phone")
     if r_name is not None and r_phone is not None:
-        db = _get_db_from_message(message)
+        db = get_db_from_message(message)
         user_db_id = int(data["user_db_id"])
         db.add_saved_recipient(
             user_id=user_db_id,
@@ -1120,18 +1177,18 @@ async def handle_delivery_picked(
         await state.update_data(
             delivery_city=city_name,
             delivery_cost=delivery_cost,
-            address="Самовывоз",
+            address=PICKUP_ADDRESS,
         )
         r_name = data.get("recipient_new_name")
         r_phone = data.get("recipient_new_phone")
         if r_name is not None and r_phone is not None:
-            db = _get_db_from_callback(callback)
+            db = get_db_from_callback(callback)
             user_db_id = int(data["user_db_id"])
             db.add_saved_recipient(
                 user_id=user_db_id,
                 name=str(r_name),
                 phone=str(r_phone),
-                address="Самовывоз",
+                address=PICKUP_ADDRESS,
             )
             await state.update_data(name=r_name, phone=r_phone)
         await _ask_delivery_datetime(message=callback.message, state=state)
@@ -1161,7 +1218,7 @@ async def handle_comment_step(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     user_db_id = int(data["user_db_id"])
 
-    db = _get_db_from_message(message)
+    db = get_db_from_message(message)
     cart_items = db.get_cart(user_id=user_db_id)
     if not cart_items:
         await message.answer(TEXTS["empty_cart"])
@@ -1216,67 +1273,15 @@ async def handle_email_choice_selected(
     selected_email = suggested[idx]
     await state.update_data(email=selected_email)
 
-    user_db_id = int(data["user_db_id"])
-    name = str(data["name"])
-    phone = str(data["phone"])
-    address = str(data["address"])
-    delivery_city = str(data.get("delivery_city", ""))
-    delivery_cost = int(data.get("delivery_cost", 0))
-    comment = data.get("comment")
-
-    db = _get_db_from_callback(callback)
-    cart_items = db.get_cart(user_id=user_db_id)
-    if not cart_items:
-        await callback.message.answer(TEXTS["empty_cart"])
-        await state.clear()
-        return
-
-    cart_total = sum(item.product.price * item.quantity for item in cart_items)
-    total = cart_total + delivery_cost
-    items_lines = []
-    for item in cart_items:
-        line_total = item.product.price * item.quantity
-        items_lines.append(
-            TEXTS["summary_item"].format(
-                title=item.product.title,
-                price=item.product.price,
-                qty=item.quantity,
-                line_total=line_total,
-            ),
-        )
-    city_display = delivery_city.strip() if delivery_city else None
-    if not city_display:
-        options_for_kb = [(s, f"{label} — {c} ₽" if c else label) for s, label, c, _ in DELIVERY_OPTIONS]
-        await callback.message.edit_text(
-            TEXTS["ask_delivery_choice"],
-            reply_markup=build_delivery_choice_keyboard(options_for_kb),
-        )
-        await state.set_state(OrderForm.delivery_choice)
-        return
-    delivery_line = city_display if address == "Самовывоз" else f"{city_display} — {address}"
-    desired_datetime = str(data.get("desired_delivery_datetime", "—"))
-    summary_text = TEXTS["summary"].format(
-        items="\n".join(items_lines),
-        delivery_line=delivery_line,
-        delivery_cost=delivery_cost,
-        desired_datetime=desired_datetime,
-        name=name,
-        phone=phone,
+    user_db_id = int(data.get("user_db_id", 0))
+    db = get_db_from_callback(callback)
+    await _build_and_show_summary(
+        target=callback,
+        state=state,
+        db=db,
+        user_db_id=user_db_id,
         email=selected_email,
-        comment=comment or "—",
-        total=total,
     )
-    await state.set_state(OrderForm.confirm)
-    try:
-        await callback.message.edit_text(
-            summary_text,
-            reply_markup=build_order_confirmation_keyboard(),
-        )
-    except TelegramBadRequest:
-        await callback.message.answer(
-            summary_text,
-            reply_markup=build_order_confirmation_keyboard(),
-        )
 
 
 @router.callback_query(OrderForm.email_choice, F.data == "order:email_new")
@@ -1315,65 +1320,16 @@ async def handle_email_step(message: Message, state: FSMContext) -> None:
     if not email_raw or not EMAIL_REGEX.match(email_raw):
         await message.answer(TEXTS["invalid_email"])
         return
-
     await state.update_data(email=email_raw)
-
     data = await state.get_data()
-    user_db_id = int(data["user_db_id"])
-    name = str(data["name"])
-    phone = str(data["phone"])
-    address = str(data["address"])
-    delivery_city = str(data.get("delivery_city", ""))
-    delivery_cost = int(data.get("delivery_cost", 0))
-    comment = data.get("comment")
-
-    db = _get_db_from_message(message)
-    cart_items = db.get_cart(user_id=user_db_id)
-    if not cart_items:
-        await message.answer(TEXTS["empty_cart"])
-        await state.clear()
-        return
-
-    cart_total = sum(item.product.price * item.quantity for item in cart_items)
-    total = cart_total + delivery_cost
-    items_lines = []
-    for item in cart_items:
-        line_total = item.product.price * item.quantity
-        items_lines.append(
-            TEXTS["summary_item"].format(
-                title=item.product.title,
-                price=item.product.price,
-                qty=item.quantity,
-                line_total=line_total,
-            ),
-        )
-    city_display = delivery_city.strip() if delivery_city else None
-    if not city_display:
-        options_for_kb = [(s, f"{label} — {c} ₽" if c else label) for s, label, c, _ in DELIVERY_OPTIONS]
-        await message.answer(
-            TEXTS["ask_delivery_choice"],
-            reply_markup=build_delivery_choice_keyboard(options_for_kb),
-        )
-        await state.set_state(OrderForm.delivery_choice)
-        return
-    delivery_line = city_display if address == "Самовывоз" else f"{city_display} — {address}"
-    desired_datetime = str(data.get("desired_delivery_datetime", "—"))
-    summary_text = TEXTS["summary"].format(
-        items="\n".join(items_lines),
-        delivery_line=delivery_line,
-        delivery_cost=delivery_cost,
-        desired_datetime=desired_datetime,
-        name=name,
-        phone=phone,
+    user_db_id = int(data.get("user_db_id", 0))
+    db = get_db_from_message(message)
+    await _build_and_show_summary(
+        target=message,
+        state=state,
+        db=db,
+        user_db_id=user_db_id,
         email=email_raw,
-        comment=comment or "—",
-        total=total,
-    )
-    await state.set_state(OrderForm.confirm)
-    await message.answer(
-        summary_text,
-        reply_markup=build_order_confirmation_keyboard(),
-        parse_mode="HTML",
     )
 
 
@@ -1408,7 +1364,7 @@ async def handle_use_saved_address(
     r_name = data.get("recipient_new_name")
     r_phone = data.get("recipient_new_phone")
     if r_name is not None and r_phone is not None:
-        db = _get_db_from_callback(callback)
+        db = get_db_from_callback(callback)
         user_db_id = int(data["user_db_id"])
         db.add_saved_recipient(
             user_id=user_db_id,
@@ -1447,7 +1403,7 @@ async def handle_change_city(
     await callback.answer()
     if callback.message is None:
         return
-    options_for_kb = [(slug, f"{label} — {cost} ₽" if cost else label) for slug, label, cost, _ in DELIVERY_OPTIONS]
+    options_for_kb = _build_delivery_options_for_kb()
     try:
         await callback.message.edit_text(
             text=TEXTS["ask_delivery_choice"],
@@ -1547,7 +1503,7 @@ async def handle_order_confirm(
     desired_delivery_datetime = data.get("desired_delivery_datetime")
 
     if not delivery_city or not str(delivery_city).strip():
-        options_for_kb = [(s, f"{label} — {c} ₽" if c else label) for s, label, c, _ in DELIVERY_OPTIONS]
+        options_for_kb = _build_delivery_options_for_kb()
         try:
             await callback.message.edit_text(
                 TEXTS["ask_delivery_choice"],
@@ -1561,7 +1517,7 @@ async def handle_order_confirm(
         await state.set_state(OrderForm.delivery_choice)
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     order = db.create_order_from_cart(
         user_id=user_db_id,
         customer_name=name,

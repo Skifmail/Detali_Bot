@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -30,6 +32,7 @@ from ..keyboards.kb import (
     build_main_menu_keyboard,
 )
 from ..services.catalog_sync import sync_catalog_from_opencart
+from ..utils import get_db_from_callback, get_db_from_message, is_admin
 
 TEXTS: dict[str, str] = {
     "not_admin": "⛔ У вас нет доступа к админ-панели.",
@@ -99,63 +102,6 @@ def _build_broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
         ),
     )
     return builder.as_markup()
-
-
-def _get_db_from_message(message: Message) -> Database:
-    """Возвращает экземпляр базы данных из контекста бота по сообщению.
-
-    Args:
-        message (Message): Сообщение Telegram.
-
-    Returns:
-        Database: Экземпляр базы данных.
-    """
-
-    db: Database = message.bot.db
-    return db
-
-
-def _get_db_from_callback(callback: CallbackQuery) -> Database:
-    """Возвращает экземпляр базы данных из контекста бота по callback-запросу.
-
-    Args:
-        callback (CallbackQuery): Callback-запрос Telegram.
-
-    Returns:
-        Database: Экземпляр базы данных.
-    """
-
-    db: Database = callback.bot.db
-    return db
-
-
-def _is_admin(message: Message) -> bool:
-    """Проверяет, является ли пользователь администратором.
-
-    Args:
-        message (Message): Сообщение пользователя.
-
-    Returns:
-        bool: True, если пользователь — администратор.
-    """
-
-    admin_ids: set[int] = getattr(message.bot, "admin_ids", set())
-    from_user = message.from_user
-    return from_user is not None and from_user.id in admin_ids
-
-
-def _is_admin_callback(callback: CallbackQuery) -> bool:
-    """Проверяет, является ли пользователь админом для callback-запроса.
-
-    Args:
-        callback (CallbackQuery): Callback-запрос.
-
-    Returns:
-        bool: True, если пользователь — администратор.
-    """
-
-    admin_ids: set[int] = getattr(callback.bot, "admin_ids", set())
-    return callback.from_user.id in admin_ids
 
 
 def _format_order_details(order: Order) -> str:
@@ -267,7 +213,7 @@ async def handle_admin_entry(message: Message) -> None:
     Returns:
         None: Ничего не возвращает.
     """
-    if not _is_admin(message):
+    if not is_admin(message.from_user.id, message.bot):
         await message.answer(TEXTS["not_admin"])
         return
 
@@ -280,9 +226,9 @@ async def handle_admin_entry(message: Message) -> None:
 @router.message(F.text == KB_TEXTS["menu_orders"])
 async def handle_admin_orders_message(message: Message) -> None:
     """Показ списка заказов по кнопке «Заказы» в меню админа."""
-    if not _is_admin(message):
+    if not is_admin(message.from_user.id, message.bot):
         return
-    db = _get_db_from_message(message)
+    db = get_db_from_message(message)
     orders = db.list_recent_orders()
     if not orders:
         await message.answer(
@@ -299,9 +245,9 @@ async def handle_admin_orders_message(message: Message) -> None:
 @router.message(F.text == KB_TEXTS["menu_stats"])
 async def handle_admin_stats_message(message: Message) -> None:
     """Показ статистики по кнопке «Статистика» в меню админа."""
-    if not _is_admin(message):
+    if not is_admin(message.from_user.id, message.bot):
         return
-    db = _get_db_from_message(message)
+    db = get_db_from_message(message)
     stats: StatsSummary = db.get_stats()
     text = TEXTS["stats"].format(
         users=stats.total_users,
@@ -317,7 +263,7 @@ async def handle_admin_broadcast_message(
     state: FSMContext,
 ) -> None:
     """Старт рассылки по кнопке «Рассылка» в меню админа."""
-    if not _is_admin(message):
+    if not is_admin(message.from_user.id, message.bot):
         return
     await state.set_state(BroadcastForm.content)
     await message.answer(
@@ -329,7 +275,7 @@ async def handle_admin_broadcast_message(
 @router.message(F.text == KB_TEXTS["menu_more"])
 async def handle_admin_more_message(message: Message) -> None:
     """Меняет нижнее меню на дополнительные действия по кнопке «Ещё»."""
-    if not _is_admin(message):
+    if not is_admin(message.from_user.id, message.bot):
         return
     await message.answer(
         "Дополнительные действия:",
@@ -340,9 +286,9 @@ async def handle_admin_more_message(message: Message) -> None:
 @router.message(F.text == KB_TEXTS["menu_sync_catalog"])
 async def handle_admin_sync_catalog_message(message: Message) -> None:
     """Запускает синхронизацию каталога по кнопке «Обновить каталог» в нижнем меню."""
-    if not _is_admin(message):
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
-    db = _get_db_from_message(message)
+    db = get_db_from_message(message)
     await message.answer(TEXTS["sync_catalog_start"])
     try:
         await sync_catalog_from_opencart(db)
@@ -357,9 +303,9 @@ async def handle_admin_sync_catalog_message(message: Message) -> None:
 @router.message(F.text == KB_TEXTS["menu_users"])
 async def handle_admin_users_message(message: Message) -> None:
     """Показывает список пользователей по кнопке «Пользователи» в нижнем меню."""
-    if not _is_admin(message):
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
-    db = _get_db_from_message(message)
+    db = get_db_from_message(message)
     total = db.count_users()
     limit = 50
     users = db.list_users(limit=limit)
@@ -370,10 +316,10 @@ async def handle_admin_users_message(message: Message) -> None:
 @router.message(F.text == KB_TEXTS["back"])
 async def handle_admin_back_reply(message: Message) -> None:
     """Возврат в главное меню по кнопке «Назад» в нижнем меню (доп. действия)."""
-    is_admin = _is_admin(message)
+    is_admin_flag = message.from_user is not None and is_admin(message.from_user.id, message.bot)
     await message.answer(
         "🏠 Главное меню.",
-        reply_markup=build_main_menu_keyboard(is_admin=is_admin),
+        reply_markup=build_main_menu_keyboard(is_admin=is_admin_flag),
     )
 
 
@@ -398,9 +344,11 @@ def _format_users_message(users: list[User], total: int, limit: int) -> str:
 async def handle_admin_users(callback: CallbackQuery) -> None:
     """Показывает список пользователей бота по кнопке «Пользователи» в меню «Ещё»."""
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
         return
-    db = _get_db_from_callback(callback)
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+    db = get_db_from_callback(callback)
     total = db.count_users()
     limit = 50
     users = db.list_users(limit=limit)
@@ -428,7 +376,9 @@ async def handle_admin_users(callback: CallbackQuery) -> None:
 async def handle_admin_back_more(callback: CallbackQuery) -> None:
     """Возврат из экрана «Пользователи» в меню «Дополнительные действия»."""
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
         return
     try:
         await callback.message.edit_text(
@@ -447,9 +397,11 @@ async def handle_admin_sync_catalog(callback: CallbackQuery) -> None:
     только товары, подтянутые из БД сайта.
     """
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
         return
-    db = _get_db_from_callback(callback)
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+    db = get_db_from_callback(callback)
     await callback.message.answer(TEXTS["sync_catalog_start"])
     try:
         await sync_catalog_from_opencart(db)
@@ -476,50 +428,51 @@ async def handle_nav_back_main(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "admin:back")
-@router.callback_query(F.data == "admin:orders")
-async def handle_admin_back_or_orders(callback: CallbackQuery) -> None:
-    """Возврат в главное меню админки или показ списка заказов (редактирование сообщения).
-
-    Args:
-        callback (CallbackQuery): Callback-запрос администратора.
-
-    Returns:
-        None: Ничего не возвращает.
-    """
+async def handle_admin_back(callback: CallbackQuery) -> None:
+    """Возврат в главное меню админки (редактирование сообщения)."""
 
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
         return
 
-    if callback.data == "admin:back":
-        main_kb = build_admin_main_keyboard()
+    main_kb = build_admin_main_keyboard()
+    try:
+        await callback.message.edit_text(
+            text=TEXTS["entry"],
+            reply_markup=main_kb,
+        )
+    except TelegramBadRequest as err:
+        logger.debug("Не удалось обновить главное меню админа: {err}", err=err)
         try:
-            await callback.message.edit_text(
+            await callback.message.edit_caption(
+                caption=TEXTS["entry"],
+                reply_markup=main_kb,
+            )
+        except TelegramBadRequest:
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            await callback.bot.send_message(
+                chat_id=callback.message.chat.id,
                 text=TEXTS["entry"],
                 reply_markup=main_kb,
             )
-        except TelegramBadRequest as e:
-            if "message is not modified" in str(e).lower():
-                pass
-            else:
-                try:
-                    await callback.message.edit_caption(
-                        caption=TEXTS["entry"],
-                        reply_markup=main_kb,
-                    )
-                except TelegramBadRequest:
-                    try:
-                        await callback.message.delete()
-                    except TelegramBadRequest:
-                        pass
-                    await callback.bot.send_message(
-                        chat_id=callback.message.chat.id,
-                        text=TEXTS["entry"],
-                        reply_markup=main_kb,
-                    )
+
+
+@router.callback_query(F.data == "admin:orders")
+async def handle_admin_orders_callback(callback: CallbackQuery) -> None:
+    """Показ списка заказов из сообщения админ-панели (редактирование сообщения)."""
+
+    await callback.answer()
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     orders = db.list_recent_orders()
     if not orders:
         try:
@@ -527,7 +480,8 @@ async def handle_admin_back_or_orders(callback: CallbackQuery) -> None:
                 text="Пока нет заказов.",
                 reply_markup=build_admin_orders_keyboard(orders=[]),
             )
-        except TelegramBadRequest:
+        except TelegramBadRequest as err:
+            logger.debug("Не удалось отредактировать список заказов: {err}", err=err)
             await callback.message.edit_text("Пока нет заказов.")
         return
 
@@ -536,8 +490,9 @@ async def handle_admin_back_or_orders(callback: CallbackQuery) -> None:
             text=TEXTS["orders_header"],
             reply_markup=build_admin_orders_keyboard(orders=orders),
         )
-    except TelegramBadRequest as e:
-        if "message is not modified" not in str(e).lower():
+    except TelegramBadRequest as err:
+        if "message is not modified" not in str(err).lower():
+            logger.debug("Ошибка при обновлении списка заказов: {err}", err=err)
             raise
 
 
@@ -553,13 +508,15 @@ async def handle_admin_order_cancel(callback: CallbackQuery) -> None:
     """
 
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
         return
 
     _, _, _, order_id_str = callback.data.split(":", maxsplit=3)
     order_id = int(order_id_str)
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     updated = db.update_order_status(
         order_id=order_id,
         new_status=OrderStatus.CANCELLED,
@@ -619,10 +576,12 @@ async def handle_admin_order_details(callback: CallbackQuery) -> None:
         None: Ничего не возвращает.
     """
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     _, _, order_id_str = callback.data.split(":", maxsplit=2)
     order_id = int(order_id_str)
     order = db.get_order(order_id=order_id)
@@ -699,10 +658,12 @@ async def handle_admin_status_set(callback: CallbackQuery) -> None:
     """
 
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     # admin:status:set:3:courier -> order_id=3, status_value=courier
     parts = callback.data.split(":", maxsplit=4)
     if len(parts) < 5:
@@ -758,10 +719,12 @@ async def handle_admin_status_menu(callback: CallbackQuery) -> None:
     обрабатывался только установкой статуса.
     """
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     _, _, order_id_str = callback.data.split(":", maxsplit=2)
     order_id = int(order_id_str)
     order: Order | None = db.get_order(order_id=order_id)
@@ -808,10 +771,12 @@ async def handle_admin_stats(callback: CallbackQuery) -> None:
     """
 
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     stats: StatsSummary = db.get_stats()
     text = TEXTS["stats"].format(
         users=stats.total_users,
@@ -842,17 +807,11 @@ async def handle_admin_broadcast(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
-    """Запрашивает контент рассылки: админ отправит фото с подписью или текст.
-
-    Args:
-        callback (CallbackQuery): Callback-запрос администратора.
-        state (FSMContext): Контекст FSM.
-
-    Returns:
-        None: Ничего не возвращает.
-    """
+    """Запрашивает контент рассылки: админ отправит фото с подписью или текст."""
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
         return
 
     await state.set_state(BroadcastForm.content)
@@ -865,7 +824,7 @@ async def handle_admin_broadcast(
 @router.message(BroadcastForm.content, F.photo)
 async def handle_broadcast_content_photo(message: Message, state: FSMContext) -> None:
     """Принимает фото с подписью (или без) для рассылки."""
-    if not _is_admin(message):
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
     photo = message.photo[-1]
     caption = message.caption or ""
@@ -882,7 +841,7 @@ async def handle_broadcast_content_photo(message: Message, state: FSMContext) ->
 @router.message(BroadcastForm.content, F.text)
 async def handle_broadcast_content_text(message: Message, state: FSMContext) -> None:
     """Принимает текстовое сообщение для рассылки."""
-    if not _is_admin(message):
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
     text = (message.text or "").strip()
     if not text:
@@ -901,7 +860,7 @@ async def handle_broadcast_content_text(message: Message, state: FSMContext) -> 
 @router.message(BroadcastForm.content)
 async def handle_broadcast_content_other(message: Message) -> None:
     """Отклоняет неподходящий контент рассылки."""
-    if not _is_admin(message):
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
     await message.answer(TEXTS["broadcast_no_content"])
 
@@ -913,7 +872,9 @@ async def handle_broadcast_confirm(
 ) -> None:
     """Отправляет рассылку всем пользователям по сохранённому контенту."""
     await callback.answer()
-    if not _is_admin_callback(callback) or callback.message is None:
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
         return
 
     data = await state.get_data()
@@ -924,7 +885,7 @@ async def handle_broadcast_confirm(
         await state.clear()
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     tg_ids = db.get_all_user_tg_ids()
     sent_count = 0
     for tg_id in tg_ids:
@@ -938,10 +899,24 @@ async def handle_broadcast_confirm(
             else:
                 await callback.bot.send_message(chat_id=tg_id, text=text)
             sent_count += 1
-        except Exception:
-            logger.exception(
-                "Не удалось отправить рассылку пользователю tg_id={tg_id}",
+            # Лимитируем скорость отправки (~20 сообщений/сек).
+            await asyncio.sleep(0.05)
+        except TelegramRetryAfter as err:
+            logger.warning(
+                "TelegramRetryAfter при рассылке, пауза {retry}s",
+                retry=err.retry_after,
+            )
+            await asyncio.sleep(err.retry_after)
+        except TelegramForbiddenError:
+            logger.warning(
+                "Пользователь tg_id={tg_id} заблокировал бота, пропускаем",
                 tg_id=tg_id,
+            )
+        except Exception as err:
+            logger.exception(
+                "Не удалось отправить рассылку пользователю tg_id={tg_id}: {err}",
+                tg_id=tg_id,
+                err=err,
             )
 
     await state.clear()
@@ -984,20 +959,27 @@ async def notify_admins_new_order(bot: Bot, order: Order) -> None:
 
     db: Database | None = getattr(bot, "db", None)
     full_text = TEXTS["new_order_title"] + _format_order_details(order)
-    photo = _first_order_photo_url(order)
+    base_photo = _first_order_photo_url(order)
 
     for admin_tg_id in admin_ids:
         try:
             sent = None
-            if photo:
+            has_photo = False
+            if base_photo:
                 try:
                     sent = await bot.send_photo(
                         chat_id=admin_tg_id,
-                        photo=photo,
+                        photo=base_photo,
                         caption=full_text,
                     )
-                except TelegramBadRequest:
-                    photo = None
+                    has_photo = True
+                except TelegramBadRequest as err:
+                    logger.warning(
+                        "Не удалось отправить фото заказа id={order_id} админу tg_id={tg_id}: {err}",
+                        order_id=order.id,
+                        tg_id=admin_tg_id,
+                        err=err,
+                    )
             if sent is None:
                 sent = await bot.send_message(chat_id=admin_tg_id, text=full_text)
             if db is not None and sent is not None:
@@ -1006,7 +988,7 @@ async def notify_admins_new_order(bot: Bot, order: Order) -> None:
                     admin_tg_id=admin_tg_id,
                     chat_id=admin_tg_id,
                     message_id=sent.message_id,
-                    has_photo=bool(photo),
+                    has_photo=has_photo,
                 )
         except Exception as e:
             logger.warning(

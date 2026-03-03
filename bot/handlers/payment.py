@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message
 
-from ..database.db import Database
 from ..database.models import Order, OrderStatus
 from ..keyboards.kb import build_payment_keyboard, build_payment_method_keyboard
+from ..utils import get_db_from_callback, get_db_from_message
 
 TEXTS: dict[str, str] = {
     "payment_choice": "💳 Выберите способ оплаты заказа #{display_number} ({total} ₽):",
@@ -25,37 +26,10 @@ TEXTS: dict[str, str] = {
         "Сумма к оплате: <b>{total} ₽</b>\n\n"
         "Оплата наличными при получении."
     ),
+    "order_created_prefix": "✅ Заказ создан.\n\n{body}",
 }
 
 router = Router(name="payment")
-
-
-def _get_db_from_message(message: Message) -> Database:
-    """Возвращает экземпляр базы данных из контекста бота по сообщению.
-
-    Args:
-        message (Message): Сообщение Telegram.
-
-    Returns:
-        Database: Экземпляр базы данных.
-    """
-
-    db: Database = message.bot.db
-    return db
-
-
-def _get_db_from_callback(callback: CallbackQuery) -> Database:
-    """Возвращает экземпляр базы данных из контекста бота по callback-запросу.
-
-    Args:
-        callback (CallbackQuery): Callback-запрос Telegram.
-
-    Returns:
-        Database: Экземпляр базы данных.
-    """
-
-    db: Database = callback.bot.db
-    return db
 
 
 async def show_payment_method_choice(
@@ -75,7 +49,7 @@ async def show_payment_method_choice(
         None: Ничего не возвращает.
     """
 
-    db = _get_db_from_message(message)
+    db = get_db_from_message(message)
     order: Order | None = db.get_order(order_id=order_id)
     if order is None:
         await message.answer("Не удалось найти заказ для оплаты.")
@@ -86,9 +60,7 @@ async def show_payment_method_choice(
         total=order.total_amount,
     )
     if edit:
-        from aiogram.exceptions import TelegramBadRequest
-
-        full_text = "✅ Заказ создан.\n\n" + text
+        full_text = TEXTS["order_created_prefix"].format(body=text)
         try:
             await message.edit_text(
                 text=full_text,
@@ -109,7 +81,7 @@ async def show_payment_method_choice(
         )
 
 
-async def start_mock_payment(message: Message, order_id: int) -> None:
+async def _start_mock_payment(message: Message, order_id: int) -> None:
     """Запускает демонстрационный сценарий оплаты ЮКassa для указанного заказа.
 
     Args:
@@ -120,7 +92,7 @@ async def start_mock_payment(message: Message, order_id: int) -> None:
         None: Ничего не возвращает.
     """
 
-    db = _get_db_from_message(message)
+    db = get_db_from_message(message)
     order: Order | None = db.get_order(order_id=order_id)
     if order is None:
         await message.answer("Не удалось найти заказ для оплаты.")
@@ -158,7 +130,7 @@ async def handle_payment_method_yookassa(callback: CallbackQuery) -> None:
     _, _, _, order_id_str = callback.data.split(":", maxsplit=3)
     order_id = int(order_id_str)
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     updated = db.update_order_payment_method(
         order_id=order_id,
         payment_method="yookassa",
@@ -171,7 +143,9 @@ async def handle_payment_method_yookassa(callback: CallbackQuery) -> None:
     from .admin import notify_admins_new_order
 
     await notify_admins_new_order(bot=callback.bot, order=updated)
-    await start_mock_payment(message=callback.message, order_id=order_id)
+    # Для реальной интеграции с ЮKassa вместо мокового сценария нужно
+    # вызывать создание платежа в ЮKassa API и переадресовывать пользователя.
+    await _start_mock_payment(message=callback.message, order_id=order_id)
 
 
 @router.callback_query(F.data.startswith("payment:method:cash:"))
@@ -192,7 +166,7 @@ async def handle_payment_method_cash(callback: CallbackQuery) -> None:
     _, _, _, order_id_str = callback.data.split(":", maxsplit=3)
     order_id = int(order_id_str)
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     updated = db.update_order_payment_method(
         order_id=order_id,
         payment_method="cash",
@@ -230,9 +204,9 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
     _, _, order_id_str = callback.data.split(":", maxsplit=2)
     order_id = int(order_id_str)
 
-    db = _get_db_from_callback(callback)
-    order: Order | None = db.get_order(order_id=order_id)
-    if order is None:
+    db = get_db_from_callback(callback)
+    order_before: Order | None = db.get_order(order_id=order_id)
+    if order_before is None:
         await callback.message.answer("Не удалось найти заказ для оплаты.")
         return
 
@@ -242,14 +216,17 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
     # передать order.email — чеки будут уходить на email покупателя.
     await asyncio.sleep(2)
 
-    db.update_order_status(order_id=order_id, new_status=OrderStatus.PAID)
+    updated = db.update_order_status(order_id=order_id, new_status=OrderStatus.PAID)
+    if updated is None:
+        await callback.message.answer("Не удалось обновить статус заказа после оплаты.")
+        return
 
     from .admin import update_admins_order_notification
 
     await update_admins_order_notification(bot=callback.bot, order_id=order_id)
 
     success_text = TEXTS["success"].format(
-        display_number=order.display_order_number,
-        total=order.total_amount,
+        display_number=updated.display_order_number,
+        total=updated.total_amount,
     )
     await callback.message.answer(success_text)

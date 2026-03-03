@@ -38,8 +38,26 @@ class OpenCartClient:
     """Клиент для вызовов OpenCart API (логин, клиент, адрес, корзина, заказ)."""
 
     def __init__(self, config: OpenCartConfig | None = None) -> None:
+        """Инициализирует клиента OpenCart API.
+
+        Args:
+            config (Optional[OpenCartConfig]): Конфигурация подключения к OpenCart.
+                Если не передана, используется конфигурация из окружения.
+        """
+
         self._config = config or get_opencart_config()
         self._api_token: str | None = None
+        self._client: httpx.AsyncClient = httpx.AsyncClient(timeout=30.0)
+
+    async def __aenter__(self) -> OpenCartClient:
+        """Возвращает клиента для использования в контекстном менеджере."""
+
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        """Закрывает HTTP-клиент при выходе из контекста."""
+
+        await self._client.aclose()
 
     def _url(self, route: str) -> str:
         base = self._config.base_url.rstrip("/")
@@ -59,18 +77,37 @@ class OpenCartClient:
         data: dict[str, Any] | list[tuple[str, str]] | None = None,
         use_token: bool = True,
     ) -> dict[str, Any]:
+        """Выполняет HTTP-запрос к OpenCart API и обрабатывает ошибки.
+
+        Args:
+            method (str): HTTP-метод ("GET" или "POST").
+            route (str): Значение параметра route в OpenCart.
+            data (dict | list[tuple[str, str]] | None): Данные формы для POST-запроса.
+            use_token (bool): Добавлять ли api_token к URL.
+
+        Returns:
+            dict[str, Any]: Распарсенный JSON-ответ.
+
+        Raises:
+            OpenCartAPIError: Ошибка HTTP или бизнес-ошибка OpenCart.
+        """
+
         url = self._url_with_token(route) if use_token else self._url(route)
-        if data is not None and not isinstance(data, list):
+        form_data: list[tuple[str, str]] | None
+        if data is None:
+            form_data = None
+        elif isinstance(data, list):
+            form_data = data
+        else:
             # Преобразуем в плоский form: key1=val1&key2=val2 (вложенные через [])
-            form_list: list[tuple[str, str]] = []
+            form_data = []
             for k, v in data.items():
-                form_list.extend(_flatten_form(k, v))
-            data = form_list
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            if method == "GET":
-                resp = await client.get(url)
-            else:
-                resp = await client.post(url, data=data)
+                form_data.extend(_flatten_form(k, v))
+
+        if method == "GET":
+            resp = await self._client.get(url)
+        else:
+            resp = await self._client.post(url, data=form_data)
         try:
             body = resp.json()
         except Exception as e:
@@ -90,6 +127,8 @@ class OpenCartClient:
         if err:
             if isinstance(err, dict):
                 msg = err.get("warning") or err.get("key") or str(err)
+            elif isinstance(err, list):
+                msg = "; ".join(str(e) for e in err)
             else:
                 msg = str(err)
             raise OpenCartAPIError(f"OpenCart error: {msg}", response=body)

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import html
 import re
-from types import SimpleNamespace
 from typing import Final
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -79,34 +78,6 @@ def _clean_title(raw_title: str) -> str:
     return _strip_html(raw_title, max_length=128)
 
 
-def _get_db_from_message(message: Message) -> Database:
-    """Возвращает экземпляр базы данных из контекста бота по сообщению.
-
-    Args:
-        message (Message): Сообщение Telegram.
-
-    Returns:
-        Database: Экземпляр базы данных.
-    """
-
-    db: Database = message.bot.db
-    return db
-
-
-def _get_db_from_callback(callback: CallbackQuery) -> Database:
-    """Возвращает экземпляр базы данных из контекста бота по callback-запросу.
-
-    Args:
-        callback (CallbackQuery): Callback-запрос Telegram.
-
-    Returns:
-        Database: Экземпляр базы данных.
-    """
-
-    db: Database = callback.bot.db
-    return db
-
-
 async def _show_categories(message: Message) -> None:
     """Отображает список категорий каталога.
 
@@ -117,7 +88,7 @@ async def _show_categories(message: Message) -> None:
         None: Ничего не возвращает.
     """
 
-    db = _get_db_from_message(message)
+    db: Database = message.bot.db
     categories = db.list_categories()
     keyboard = build_categories_keyboard(categories=categories)
     await message.answer(
@@ -126,27 +97,28 @@ async def _show_categories(message: Message) -> None:
     )
 
 
-async def _show_products_page(
-    message: Message,
+async def _render_products_page(
+    *,
+    bot: Bot,
+    chat_id: int,
+    db: Database,
     category_id: int,
     page: int,
-    *,
     state: FSMContext | None = None,
-) -> None:
-    """Страница каталога: до 3 фото в медиа-группе и клавиатура (Назад/Далее, К категориям).
+) -> list[int]:
+    """Отрисовывает страницу товаров категории: медиа-группа и сообщение с кнопками.
 
     Args:
-        message (Message): Куда отправлять (message.chat.id, message.bot).
+        bot (Bot): Экземпляр бота aiogram.
+        chat_id (int): ID чата для отправки.
+        db (Database): Экземпляр базы данных бота.
         category_id (int): Идентификатор категории.
         page (int): Номер страницы (0-индекс).
         state (FSMContext | None): Для сохранения id сообщений при возврате/пагинации.
 
     Returns:
-        None: Ничего не возвращает.
+        list[int]: Список отправленных message_id (сначала медиа, затем текст).
     """
-    chat_id = message.chat.id
-    bot = message.bot
-    db = _get_db_from_message(message)
     total_count = db.count_products_in_category(category_id=category_id)
 
     if total_count == 0:
@@ -156,7 +128,7 @@ async def _show_products_page(
             text=TEXTS["no_products"],
             reply_markup=keyboard,
         )
-        return
+        return []
 
     offset = page * PAGE_SIZE
     products = db.list_products_by_category(
@@ -220,6 +192,7 @@ async def _show_products_page(
             catalog_category_id=category_id,
             catalog_page=page,
         )
+    return message_ids
 
 
 async def _send_product_card(
@@ -311,82 +284,33 @@ async def handle_back_to_categories(
         return
 
     if callback.data == "nav:back_products":
-        # Возврат с карточки товара: редактируем сообщение в страницу товаров и дополняем медиа-группой.
+        # Возврат с карточки товара: очищаем текущие сообщения страницы и рисуем её заново.
         data = await state.get_data()
         category_id = data.get("catalog_category_id")
-        page = data.get("catalog_page", 0)
+        page = int(data.get("catalog_page", 0))
         if category_id is None:
             return
-        db = _get_db_from_callback(callback)
-        chat_id = callback.message.chat.id
-        total_count = db.count_products_in_category(category_id=category_id)
-        if total_count == 0:
-            keyboard = build_categories_keyboard(categories=db.list_categories())
+        chat_id = data.get("catalog_chat_id") or callback.message.chat.id
+        old_ids: list[int] = data.get("catalog_message_ids") or []
+        # Удаляем сообщения предыдущей страницы (карточка удалится вместе с callback.message)
+        for mid in old_ids:
             try:
-                await callback.message.edit_text(TEXTS["no_products"], reply_markup=keyboard)
-            except TelegramBadRequest:
-                await callback.message.edit_caption(caption=TEXTS["no_products"], reply_markup=keyboard)
-            return
-        offset = page * PAGE_SIZE
-        products_list = list(
-            db.list_products_by_category(
-                category_id=category_id,
-                limit=PAGE_SIZE,
-                offset=offset,
-            )
-        )
-        keyboard = build_products_grid_page_keyboard(
-            products_list,
+                await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
+            except (TelegramBadRequest, TypeError):
+                pass
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
+
+        db_page: Database = callback.bot.db
+        await _render_products_page(
+            bot=callback.bot,
+            chat_id=chat_id,
+            db=db_page,
             category_id=category_id,
             page=page,
-            page_size=PAGE_SIZE,
-            total_count=total_count,
-        )
-        items_lines = [f"{i}. {p.title} — {p.price} ₽" for i, p in enumerate(products_list, start=1)]
-        choose_text = TEXTS["catalog_choose_product_no_photos"].format(items="\n".join(items_lines))
-        photos_with_captions = [
-            (
-                p.image_url.strip(),
-                TEXTS["product_preview_caption"].format(
-                    title=f"{idx}. {p.title}",
-                    price=p.price,
-                ),
-            )
-            for idx, p in enumerate(products_list, start=1)
-            if p.image_url and p.image_url.strip()
-        ]
-        if photos_with_captions:
-            choose_text = TEXTS["catalog_choose_product"]
-        try:
-            await callback.message.edit_text(choose_text, reply_markup=keyboard)
-        except TelegramBadRequest:
-            try:
-                await callback.message.edit_caption(caption=choose_text, reply_markup=keyboard)
-            except TelegramBadRequest:
-                msg = SimpleNamespace(
-                    chat=SimpleNamespace(id=chat_id),
-                    bot=callback.bot,
-                )
-                await _show_products_page(
-                    message=msg,
-                    category_id=category_id,
-                    page=page,
-                    state=state,
-                )
-                return
-        message_ids: list[int] = [callback.message.message_id]
-        if photos_with_captions:
-            media = [InputMediaPhoto(type="photo", media=ph, caption=cap) for ph, cap in photos_with_captions]
-            try:
-                sent = await callback.bot.send_media_group(chat_id=chat_id, media=media)
-                message_ids = [m.message_id for m in sent] + message_ids
-            except TelegramBadRequest:
-                pass
-        await state.update_data(
-            catalog_message_ids=message_ids,
-            catalog_chat_id=chat_id,
-            catalog_category_id=category_id,
-            catalog_page=page,
+            state=state,
         )
         return
 
@@ -394,7 +318,7 @@ async def handle_back_to_categories(
     data = await state.get_data()
     existing_ids: list[int] = data.get("catalog_message_ids") or []
     chat_id = data.get("catalog_chat_id") or callback.message.chat.id
-    db = _get_db_from_callback(callback)
+    db: Database = callback.bot.db
     keyboard = build_categories_keyboard(categories=db.list_categories())
     # Последнее сообщение в списке — текст с клавиатурой страницы, его редактируем.
     if existing_ids:
@@ -454,71 +378,25 @@ async def handle_category_selected(
         None: Ничего не возвращает.
     """
     await callback.answer()
-    assert callback.message is not None
+    if callback.message is None:
+        return
     chat_id = callback.message.chat.id
     _, category_id_str = callback.data.split(":", maxsplit=1)
     category_id = int(category_id_str)
-    db = _get_db_from_callback(callback)
-    total_count = db.count_products_in_category(category_id=category_id)
-    if total_count == 0:
-        keyboard = build_categories_keyboard(categories=db.list_categories())
-        try:
-            await callback.message.edit_text(TEXTS["no_products"], reply_markup=keyboard)
-        except TelegramBadRequest:
-            await callback.message.answer(
-                TEXTS["no_products"],
-                reply_markup=keyboard,
-            )
-        return
-    products_list = list(
-        db.list_products_by_category(
-            category_id=category_id,
-            limit=PAGE_SIZE,
-            offset=0,
-        )
-    )
-    keyboard = build_products_grid_page_keyboard(
-        products_list,
+    # Удаляем сообщение с категориями и показываем первую страницу товаров.
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+
+    db: Database = callback.bot.db
+    await _render_products_page(
+        bot=callback.bot,
+        chat_id=chat_id,
+        db=db,
         category_id=category_id,
         page=0,
-        page_size=PAGE_SIZE,
-        total_count=total_count,
-    )
-    items_lines = [f"{i}. {p.title} — {p.price} ₽" for i, p in enumerate(products_list, start=1)]
-    choose_text = TEXTS["catalog_choose_product_no_photos"].format(items="\n".join(items_lines))
-    photos_with_captions = [
-        (
-            p.image_url.strip(),
-            TEXTS["product_preview_caption"].format(
-                title=f"{idx}. {p.title}",
-                price=p.price,
-            ),
-        )
-        for idx, p in enumerate(products_list, start=1)
-        if p.image_url and p.image_url.strip()
-    ]
-    if photos_with_captions:
-        choose_text = TEXTS["catalog_choose_product"]
-    try:
-        await callback.message.edit_text(choose_text, reply_markup=keyboard)
-    except TelegramBadRequest:
-        await callback.message.answer(
-            choose_text,
-            reply_markup=keyboard,
-        )
-    message_ids: list[int] = [callback.message.message_id]
-    if photos_with_captions:
-        media = [InputMediaPhoto(type="photo", media=ph, caption=cap) for ph, cap in photos_with_captions]
-        try:
-            sent = await callback.bot.send_media_group(chat_id=chat_id, media=media)
-            message_ids = [m.message_id for m in sent] + message_ids
-        except TelegramBadRequest:
-            pass
-    await state.update_data(
-        catalog_message_ids=message_ids,
-        catalog_chat_id=chat_id,
-        catalog_category_id=category_id,
-        catalog_page=0,
+        state=state,
     )
 
 
@@ -537,121 +415,29 @@ async def handle_products_page(
         None: Ничего не возвращает.
     """
     await callback.answer()
-    assert callback.message is not None
+    if callback.message is None:
+        return
     data = await state.get_data()
-    message_ids: list[int] = data.get("catalog_message_ids") or []
+    old_ids: list[int] = data.get("catalog_message_ids") or []
     chat_id = data.get("catalog_chat_id") or callback.message.chat.id
     _, category_id_str, page_str = callback.data.split(":", maxsplit=2)
     category_id = int(category_id_str)
     page = int(page_str)
-    db = _get_db_from_callback(callback)
-    total_count = db.count_products_in_category(category_id=category_id)
-    if total_count == 0:
-        keyboard = build_categories_keyboard(categories=db.list_categories())
-        if message_ids:
-            text_msg_id = message_ids[-1]
-            try:
-                await callback.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=text_msg_id,
-                    text=TEXTS["no_products"],
-                    reply_markup=keyboard,
-                )
-            except TelegramBadRequest:
-                await callback.bot.edit_message_caption(
-                    chat_id=chat_id,
-                    message_id=text_msg_id,
-                    caption=TEXTS["no_products"],
-                    reply_markup=keyboard,
-                )
-            for mid in message_ids[:-1]:
-                try:
-                    await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
-                except (TelegramBadRequest, TypeError):
-                    pass
-        await state.clear()
-        return
-    products_list = list(
-        db.list_products_by_category(
-            category_id=category_id,
-            limit=PAGE_SIZE,
-            offset=page * PAGE_SIZE,
-        )
-    )
-    keyboard = build_products_grid_page_keyboard(
-        products_list,
-        category_id=category_id,
-        page=page,
-        page_size=PAGE_SIZE,
-        total_count=total_count,
-    )
-    items_lines = [f"{i}. {p.title} — {p.price} ₽" for i, p in enumerate(products_list, start=1)]
-    choose_text = TEXTS["catalog_choose_product_no_photos"].format(items="\n".join(items_lines))
-    photos_with_captions = [
-        (
-            p.image_url.strip(),
-            TEXTS["product_preview_caption"].format(
-                title=f"{idx}. {p.title}",
-                price=p.price,
-            ),
-        )
-        for idx, p in enumerate(products_list, start=1)
-        if p.image_url and p.image_url.strip()
-    ]
-    if photos_with_captions:
-        choose_text = TEXTS["catalog_choose_product"]
-    edit_msg_id: int | None = message_ids[-1] if message_ids else None
-    media_ids = message_ids[:-1] if message_ids else []
-    for mid in media_ids:
+    # Удаляем старые сообщения страницы и отрисовываем её заново.
+    for mid in old_ids:
         try:
             await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
         except (TelegramBadRequest, TypeError):
             pass
-    if edit_msg_id is not None:
-        try:
-            await callback.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=edit_msg_id,
-                text=choose_text,
-                reply_markup=keyboard,
-            )
-        except TelegramBadRequest:
-            try:
-                await callback.bot.edit_message_caption(
-                    chat_id=chat_id,
-                    message_id=edit_msg_id,
-                    caption=choose_text,
-                    reply_markup=keyboard,
-                )
-            except TelegramBadRequest:
-                await _show_products_page(
-                    message=callback.message,
-                    category_id=category_id,
-                    page=page,
-                    state=state,
-                )
-                return
-    else:
-        await _show_products_page(
-            message=callback.message,
-            category_id=category_id,
-            page=page,
-            state=state,
-        )
-        return
-    new_message_ids: list[int] = [edit_msg_id] if edit_msg_id is not None else []
-    if photos_with_captions:
-        media = [InputMediaPhoto(type="photo", media=ph, caption=cap) for ph, cap in photos_with_captions]
-        try:
-            sent = await callback.bot.send_media_group(chat_id=chat_id, media=media)
-            new_message_ids = [m.message_id for m in sent] + new_message_ids
-        except TelegramBadRequest:
-            pass
-    await state.update_data(
-        catalog_message_ids=new_message_ids,
-        catalog_chat_id=chat_id,
-        catalog_category_id=category_id,
-        catalog_page=page,
+
+    db: Database = callback.bot.db
+    await _render_products_page(
+        bot=callback.bot,
+        chat_id=chat_id,
+        db=db,
+        category_id=category_id,
+        page=page,
+        state=state,
     )
 
 
@@ -689,7 +475,7 @@ async def handle_product_selected(
             pass
     await state.update_data(catalog_message_ids=[], catalog_chat_id=None)
 
-    db = _get_db_from_callback(callback)
+    db: Database = callback.bot.db
     _, product_id_str = callback.data.split(":", maxsplit=1)
     product_id = int(product_id_str)
     product: Product | None = db.get_product(product_id=product_id)

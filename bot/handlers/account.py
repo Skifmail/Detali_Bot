@@ -7,7 +7,6 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
-from ..database.db import Database
 from ..database.models import Order, OrderStatus, OrderSummary
 from ..keyboards.kb import (
     TEXTS as KB_TEXTS,
@@ -17,6 +16,7 @@ from ..keyboards.kb import (
     build_account_orders_keyboard,
     build_main_menu_keyboard,
 )
+from ..utils import get_db_from_callback, get_db_from_message, is_admin
 from .cart import _show_cart
 
 TEXTS: dict[str, str] = {
@@ -42,20 +42,6 @@ TEXTS: dict[str, str] = {
 router = Router(name="account")
 
 
-def _get_db_from_message(message: Message) -> Database:
-    """Возвращает экземпляр базы данных из контекста бота по сообщению.
-
-    Args:
-        message (Message): Сообщение Telegram.
-
-    Returns:
-        Database: Экземпляр базы данных.
-    """
-
-    db: Database = message.bot.db
-    return db
-
-
 def _aggregate_orders(orders: Iterable[OrderSummary]) -> tuple[int, int]:
     """Считает количество заказов и общую сумму по ним.
 
@@ -74,11 +60,6 @@ def _aggregate_orders(orders: Iterable[OrderSummary]) -> tuple[int, int]:
     return count, total
 
 
-def _get_db_from_callback(callback: CallbackQuery) -> Database:
-    """Возвращает экземпляр БД из контекста бота по callback."""
-    return callback.bot.db
-
-
 def _format_payment_info_user(order: Order) -> str:
     """Строка способа оплаты для отображения пользователю."""
     pm = order.payment_method or ""
@@ -93,17 +74,17 @@ def _format_payment_info_user(order: Order) -> str:
 async def handle_account_back_orders(callback: CallbackQuery) -> None:
     """Возврат к списку заказов (редактирование сообщения)."""
     await callback.answer()
-    if callback.message is None:
+    if callback.message is None or callback.from_user is None:
         return
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     from_user = callback.from_user
     current_user = db.get_or_create_user(
         tg_id=from_user.id,
         first_name=from_user.first_name,
         last_name=from_user.last_name,
     )
-    orders = db.list_orders_for_user(user_id=current_user.id)
+    orders = list(db.list_orders_for_user(user_id=current_user.id))
     if not orders:
         await callback.message.edit_text(TEXTS["no_orders"])
         return
@@ -114,6 +95,10 @@ async def handle_account_back_orders(callback: CallbackQuery) -> None:
         )
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e).lower():
+            # Логируем и пробрасываем дальше для отладки.
+            from loguru import logger
+
+            logger.debug("Ошибка редактирования списка заказов аккаунта: {err}", err=e)
             raise
 
 
@@ -121,13 +106,13 @@ async def handle_account_back_orders(callback: CallbackQuery) -> None:
 async def handle_account_order_detail(callback: CallbackQuery) -> None:
     """Показывает детали заказа и кнопки «Повторить» / «Отменить»."""
     await callback.answer()
-    if callback.message is None:
+    if callback.message is None or callback.from_user is None:
         return
 
     _, _, order_id_str = callback.data.split(":", maxsplit=2)
     order_id = int(order_id_str)
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     from_user = callback.from_user
     current_user = db.get_or_create_user(
         tg_id=from_user.id,
@@ -167,6 +152,9 @@ async def handle_account_order_detail(callback: CallbackQuery) -> None:
         )
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e).lower():
+            from loguru import logger
+
+            logger.debug("Ошибка редактирования деталей заказа в аккаунте: {err}", err=e)
             raise
 
 
@@ -174,13 +162,13 @@ async def handle_account_order_detail(callback: CallbackQuery) -> None:
 async def handle_account_cancel_order(callback: CallbackQuery) -> None:
     """Отмена заказа пользователем (только для статусов Новый / Ожидает оплаты)."""
     await callback.answer()
-    if callback.message is None:
+    if callback.message is None or callback.from_user is None:
         return
 
     _, _, order_id_str = callback.data.split(":", maxsplit=2)
     order_id = int(order_id_str)
 
-    db = _get_db_from_callback(callback)
+    db = get_db_from_callback(callback)
     from_user = callback.from_user
     current_user = db.get_or_create_user(
         tg_id=from_user.id,
@@ -217,6 +205,9 @@ async def handle_account_cancel_order(callback: CallbackQuery) -> None:
         )
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e).lower():
+            from loguru import logger
+
+            logger.debug("Ошибка редактирования отменённого заказа в аккаунте: {err}", err=e)
             raise
 
 
@@ -227,24 +218,24 @@ async def handle_account_entry(message: Message) -> None:
 
     Администраторам кабинет недоступен — показывается главное меню.
     """
-    admin_ids: set[int] = getattr(message.bot, "admin_ids", set())
-    if message.from_user and message.from_user.id in admin_ids:
+    from_user = message.from_user
+    if from_user is not None and is_admin(from_user.id, message.bot):
         await message.answer(
             "Личный кабинет доступен только покупателям. Используйте админ-панель.",
             reply_markup=build_main_menu_keyboard(is_admin=True),
         )
         return
 
-    db = _get_db_from_message(message)
-    from_user = message.from_user
-    assert from_user is not None
+    db = get_db_from_message(message)
+    if from_user is None:
+        return
 
     current_user = db.get_or_create_user(
         tg_id=from_user.id,
         first_name=from_user.first_name,
         last_name=from_user.last_name,
     )
-    orders = db.list_orders_for_user(user_id=current_user.id)
+    orders = list(db.list_orders_for_user(user_id=current_user.id))
     orders_count, total_spent = _aggregate_orders(orders)
 
     full_name_parts = [part for part in [current_user.first_name, current_user.last_name] if part]
@@ -279,10 +270,10 @@ async def handle_repeat_order(callback: CallbackQuery) -> None:
         None: Ничего не возвращает.
     """
     await callback.answer()
-    if callback.message is None:
+    if callback.message is None or callback.from_user is None:
         return
 
-    db = _get_db_from_message(callback.message)
+    db = get_db_from_callback(callback)
     from_user = callback.from_user
     current_user = db.get_or_create_user(
         tg_id=from_user.id,
