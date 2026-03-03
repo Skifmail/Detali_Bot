@@ -262,14 +262,18 @@ async def _send_product_card(
                 caption,
                 reply_markup=keyboard,
             )
-    except TelegramBadRequest:
+    except TelegramBadRequest as e:
         logger.warning(
-            "Не удалось загрузить изображение товара product_id={}",
+            "Не удалось загрузить изображение товара product_id={} ({})",
             product.id,
+            e,
         )
+        # В запасном варианте отправляем текст без HTML-разметки,
+        # чтобы исключить любые проблемы с разбором сущностей Telegram.
         await callback.message.answer(
             caption + "\n\n(Изображение временно недоступно.)",
             reply_markup=keyboard,
+            parse_mode=None,
         )
 
 
