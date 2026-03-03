@@ -50,7 +50,9 @@ def _strip_html(html_text: str, max_length: int = CAPTION_MAX_LENGTH) -> str:
     """
     if not html_text or not html_text.strip():
         return ""
-    text = html_text.strip()
+    # Сначала декодируем HTML-сущности (&nbsp;, &amp;, &lt;p&gt; и т.д.),
+    # чтобы любые закодированные теги тоже можно было корректно удалить.
+    text = html.unescape(html_text.strip())
     # <br>, <br/>, <p> — в перенос строки
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</p>\s*", "\n", text, flags=re.IGNORECASE)

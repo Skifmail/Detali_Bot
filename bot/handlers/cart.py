@@ -271,11 +271,17 @@ async def handle_add_to_cart(
     if from_user is not None and is_admin(from_user.id, callback.bot):
         await callback.answer("Корзина недоступна для администраторов.", show_alert=True)
         return
-    await callback.answer("✅ Товар добавлен в корзину.")
     if from_user is None:
+        await callback.answer()
         return
+
     db = get_db_from_callback(callback)
     product_id = callback_data.product_id
+    product = db.get_product(product_id=product_id)
+    if product is None or product.opencart_product_id is None:
+        # Товар больше неактивен или не привязан к OpenCart — не даём добавить «битую» позицию.
+        await callback.answer("Этот товар больше недоступен в каталоге.", show_alert=True)
+        return
 
     current_user = db.get_or_create_user(
         tg_id=from_user.id,
@@ -283,6 +289,7 @@ async def handle_add_to_cart(
         last_name=from_user.last_name,
     )
     db.add_to_cart(user_id=current_user.id, product_id=product_id, delta=1)
+    await callback.answer("✅ Товар добавлен в корзину.")
 
     if callback.message is None:
         return
