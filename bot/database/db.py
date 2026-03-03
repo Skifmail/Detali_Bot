@@ -958,11 +958,13 @@ class Database:
 
         items: list[CartItem] = []
         for row in rows:
-            # Логирование сырых данных из БД для отладки оформления заказа
-            raw_oc = row["opencart_product_id"] if "opencart_product_id" in row else "<нет колонки>"
+            # Логирование сырых данных из БД для отладки оформления заказа.
+            # sqlite3.Row не является обычным dict, поэтому сначала приводим к словарю.
+            row_dict = dict(row)
+            raw_oc = row_dict.get("opencart_product_id", "<нет колонки>")
             logger.info(
                 "get_cart: product_id={pid}, raw opencart_product_id={raw_oc}",
-                pid=row["product_id"],
+                pid=row_dict["product_id"],
                 raw_oc=raw_oc,
             )
             product = self._row_to_product(row)
@@ -1487,16 +1489,19 @@ class Database:
             Product: Модель товара.
         """
 
-        raw_oc_id = row["opencart_product_id"] if "opencart_product_id" in row else None
+        # sqlite3.Row реализует интерфейс последовательности; для безопасного доступа к
+        # дополнительным колонкам преобразуем строку к словарю по именам колонок.
+        row_dict = dict(row)
+        raw_oc_id = row_dict.get("opencart_product_id")
         opencart_product_id = int(raw_oc_id) if raw_oc_id is not None else None
         return Product(
-            id=int(row["id"]),
-            category_id=int(row["category_id"]),
-            title=str(row["title"]),
-            description=str(row["description"]),
-            price=int(row["price"]),
-            image_url=str(row["image_url"]),
-            is_active=bool(row["is_active"]),
+            id=int(row_dict["id"]),
+            category_id=int(row_dict["category_id"]),
+            title=str(row_dict["title"]),
+            description=str(row_dict["description"]),
+            price=int(row_dict["price"]),
+            image_url=str(row_dict["image_url"]),
+            is_active=bool(row_dict["is_active"]),
             opencart_product_id=opencart_product_id,
         )
 
