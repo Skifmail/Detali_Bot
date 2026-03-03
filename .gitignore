@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.github
+.passwords.txt
+.pre-commit-config.yaml
+
+# Virtual environments
+.venv
+
+# Secrets and local config
+.env
+.env.example
+bot/.env
+*.sqlite3
+bot/*.sqlite3
