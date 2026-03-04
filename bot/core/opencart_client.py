@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from loguru import logger
@@ -110,7 +111,15 @@ class OpenCartClient:
         if method == "GET":
             resp = await asyncio.to_thread(self._client.get, url)
         else:
-            resp = await asyncio.to_thread(self._client.post, url, data=form_data)
+            # Синхронный Client.post с data=list of tuples в части версий даёт TypeError
+            # при сборке тела; кодируем форму вручную и передаём как content.
+            body_bytes = urlencode(form_data or [], doseq=True).encode("utf-8")
+            resp = await asyncio.to_thread(
+                self._client.post,
+                url,
+                content=body_bytes,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
         try:
             body = resp.json()
         except Exception as e:
