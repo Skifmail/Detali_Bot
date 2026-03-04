@@ -39,20 +39,28 @@ TEXTS: dict[str, str] = {
     "entry": "⚙️ Админ-панель floraldetails demo.\n\nВыберите раздел:",
     "orders_header": "📦 Последние заказы:",
     "order_details": (
-        "📦 Заказ #{display_number}\n"
-        "Статус: {status}\n"
-        "📆 Дата и время заказа: {order_created_at}\n"
-        "💳 Оплата: {payment_info}\n\n"
-        "👤 Получатель: {customer_name}\n"
-        "📞 Телефон: {phone}\n"
-        "📍 Адрес доставки: {delivery_address}\n"
-        "🚚 Город доставки: {delivery_city}\n"
-        "💰 Стоимость доставки: {delivery_cost} ₽\n"
+        "<b>📦 Заказ</b> #{display_number}\n"
+        "<b>Статус</b> {status}\n"
+        "<b>📆 Дата, время</b> {order_created_at}\n"
+        "<b>💳 Оплата</b> {payment_info}\n"
+        "─────────────────────\n"
+        "<b>👤 Получатель</b> {customer_name}\n"
+        "<b>📞 Телефон</b> {phone}\n"
+        "─────────────────────\n"
+        "<b>🚚 Доставка</b>\n"
+        "Город: {delivery_city}\n"
+        "Адрес: {delivery_address}\n"
         "📅 Желаемые дата и время: {desired_datetime}\n"
-        "✏️ Комментарий: {comment}\n\n"
-        "🛍 Товары:\n{items}\n\n"
-        "💵 Сумма заказа: {total} ₽\n"
-        "ID пользователя (заказчика): {user_id}"
+        "─────────────────────\n"
+        "<b>✏️ Комментарий</b> {comment}\n"
+        "─────────────────────\n"
+        "<b>🛍 Товары</b>\n"
+        "{items}\n"
+        "💰 Доставка: {delivery_cost} ₽\n"
+        "─────────────────────\n"
+        "<b>💵 Итого</b> {total} ₽\n"
+        "─────────────────────\n"
+        "ID пользователя: {user_id}"
     ),
     "order_item": "• {title} — {price} ₽ × {qty} = {line_total} ₽",
     "new_order_notification_title": "🆕 Новый заказ #{display_number}",
@@ -178,14 +186,16 @@ def _format_payment_info(order: Order) -> str:
         order (Order): Заказ.
 
     Returns:
-        str: Текст вида «Наличными при получении» или «ЮКassa. Статус: …».
+        str: Текст вида «Наличными при получении», «ЮКassa. Статус: …» или «ЮКassa (тест)».
     """
-
-    pm = order.payment_method or ""
+    pm = (order.payment_method or "").strip()
     if pm == "cash":
         return "Наличными при получении"
     if pm == "yookassa":
         return f"ЮКassa. Статус: {order.status.human_readable}"
+    # Заказ оплачен, но способ не был сохранён (демо-оплата или старая запись без метода)
+    if order.status == OrderStatus.PAID:
+        return "ЮКassa (тест / демо)"
     return "—"
 
 

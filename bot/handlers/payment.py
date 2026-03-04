@@ -212,6 +212,10 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
 
     await callback.message.answer(TEXTS["processing"])
 
+    # Если способ оплаты не был выбран ранее (редкий кейс), фиксируем «yookassa» для отчётов.
+    if not (order_before.payment_method or "").strip():
+        db.update_order_payment_method(order_id=order_id, payment_method="yookassa")
+
     # TODO: заменить на реальный ЮKassa Payment.create; в чеке (receipt.customer.email)
     # передать order.email — чеки будут уходить на email покупателя.
     await asyncio.sleep(2)

@@ -268,6 +268,8 @@ async def _build_and_show_summary(
         total=total,
     )
 
+    # Явно сохраняем email в state перед показом кнопки «Подтвердить», чтобы при подтверждении он точно был в data.
+    await state.update_data(email=email)
     await state.set_state(OrderForm.confirm)
     kb = build_order_confirmation_keyboard()
 
@@ -1553,13 +1555,29 @@ async def handle_order_confirm(
         return
 
     db = get_db_from_callback(callback)
+    if not email or not str(email).strip():
+        # Подстраховка: если email по какой-то причине не в state — берём последний использованный пользователем.
+        suggested = db.get_emails_used_by_user(user_db_id)
+        if suggested:
+            email = suggested[0]
+            logger.debug(
+                "Оформление заказа: email взят из истории пользователя (в state не было), user_db_id={}",
+                user_db_id,
+            )
+        else:
+            email = None
+    elif not isinstance(email, str):
+        email = None
+    else:
+        email = str(email).strip() or None
+
     order = db.create_order_from_cart(
         user_id=user_db_id,
         customer_name=name,
         phone=phone,
         delivery_address=address,
         comment=comment if isinstance(comment, str) else None,
-        email=email if isinstance(email, str) and email else None,
+        email=email,
         delivery_city=str(delivery_city) if delivery_city else None,
         delivery_cost=delivery_cost,
         desired_delivery_datetime=(str(desired_delivery_datetime) if desired_delivery_datetime else None),
