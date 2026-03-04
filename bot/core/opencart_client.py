@@ -130,6 +130,9 @@ class OpenCartClient:
                 body=resp.text[:500],
             )
             raise OpenCartAPIError(f"Неверный ответ API: {e}") from e
+        # OpenCart иногда возвращает list вместо dict (например api/shipping/address)
+        if not isinstance(body, dict):
+            body = {}
         if resp.status_code >= 400:
             raise OpenCartAPIError(
                 f"HTTP {resp.status_code}: {body.get('error', body)}",
