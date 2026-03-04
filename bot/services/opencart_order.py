@@ -66,7 +66,12 @@ async def create_order_in_opencart(order: Order) -> int | None:
 
     firstname, lastname = _split_name(order.customer_name)
     city = (order.delivery_city or "Не указан").strip()
-    address_1 = (order.delivery_address or "").strip() or "—"
+    if len(city) < 2:
+        city = "Не указан"
+    address_1 = (order.delivery_address or "").strip() or "Адрес не указан"
+    if len(address_1) < 3:
+        address_1 = "Адрес не указан"
+    postcode = "000000"  # OpenCart часто требует postcode; в заказе бота индекса нет
     email = (order.email or "").strip() or config.order_email
     if not email:
         email = f"bot-order-{order.id}@{FALLBACK_EMAIL_DOMAIN}"
@@ -88,7 +93,10 @@ async def create_order_in_opencart(order: Order) -> int | None:
                 city=city,
                 zone_id=config.default_zone_id,
                 country_id=config.default_country_id,
+                postcode=postcode,
             )
+            await client.cart_add(products_oc)
+            # Адрес доставки задаём после корзины: OpenCart проверяет hasShipping() по корзине.
             await client.set_shipping_address(
                 firstname=firstname,
                 lastname=lastname,
@@ -96,8 +104,8 @@ async def create_order_in_opencart(order: Order) -> int | None:
                 city=city,
                 zone_id=config.default_zone_id,
                 country_id=config.default_country_id,
+                postcode=postcode,
             )
-            await client.cart_add(products_oc)
 
             payment_methods = await client.get_payment_methods()
             payment_code = _first_key(payment_methods)
