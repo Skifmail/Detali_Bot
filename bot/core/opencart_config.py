@@ -96,6 +96,8 @@ class OpenCartConfig:
         api_key: Ключ API из админки OpenCart (Система → Пользователи → API).
         api_username: Имя пользователя API (обычно «Default»).
         order_status_id: ID статуса заказа в OpenCart для заказов из бота (напр. 17).
+        order_status_paid_id: ID статуса «В обработке»/«Оплачен» для записи в историю
+            после оплаты (если не задан — используется order_status_id).
         default_country_id: ID страны для адреса доставки (напр. 176 — Россия).
         default_zone_id: ID региона/зоны для адреса (0 если не используется).
         order_email: Email для заказов из бота (OpenCart требует email клиента).
@@ -105,6 +107,7 @@ class OpenCartConfig:
     api_key: str
     api_username: str
     order_status_id: int
+    order_status_paid_id: int
     default_country_id: int
     default_zone_id: int
     order_email: str
@@ -145,6 +148,11 @@ def get_opencart_config() -> OpenCartConfig:
         order_status_id = int(raw_status)
     except ValueError:
         order_status_id = 17
+    raw_paid = (os.getenv("OPENCART_ORDER_STATUS_PAID_ID") or str(order_status_id)).strip()
+    try:
+        order_status_paid_id = int(raw_paid)
+    except ValueError:
+        order_status_paid_id = order_status_id
 
     if not base_url:
         raise RuntimeError(
@@ -170,6 +178,7 @@ def get_opencart_config() -> OpenCartConfig:
         api_key=api_key,
         api_username=api_username,
         order_status_id=order_status_id,
+        order_status_paid_id=order_status_paid_id,
         default_country_id=default_country_id,
         default_zone_id=default_zone_id,
         order_email=order_email,

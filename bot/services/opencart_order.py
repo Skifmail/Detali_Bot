@@ -10,6 +10,51 @@ from bot.core.opencart_client import OpenCartAPIError, OpenCartClient
 from bot.core.opencart_config import get_opencart_config
 from bot.database.models import Order
 
+
+async def add_payment_confirmation_to_opencart(
+    opencart_order_id: int,
+    payment_comment: str,
+) -> None:
+    """Добавляет в историю заказа OpenCart запись о подтверждении оплаты.
+
+    Если API не поддерживает api/order/history, ошибка логируется и не пробрасывается.
+    Использует OPENCART_ORDER_STATUS_PAID_ID (или OPENCART_ORDER_STATUS_ID) для статуса записи.
+
+    Args:
+        opencart_order_id: ID заказа в OpenCart.
+        payment_comment: Текст записи (например «Платеж номер … подтвержден»).
+    """
+    try:
+        config = get_opencart_config()
+    except RuntimeError:
+        return
+    status_id = getattr(config, "order_status_paid_id", config.order_status_id)
+    async with OpenCartClient(config) as client:
+        try:
+            await client.login()
+            await client.add_order_history(
+                order_id=opencart_order_id,
+                order_status_id=status_id,
+                comment=payment_comment,
+                notify=False,
+            )
+            logger.info(
+                "В OpenCart заказ order_id={} добавлена запись в историю: оплата подтверждена",
+                opencart_order_id,
+            )
+        except OpenCartAPIError as e:
+            logger.warning(
+                "Не удалось добавить историю заказа в OpenCart (order_id={}): {}",
+                opencart_order_id,
+                e,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "OpenCart api/order/history недоступен или ошибка: {}",
+                e,
+            )
+
+
 DEFAULT_CUSTOMER_FIRST_NAME = "Клиент"
 FALLBACK_EMAIL_DOMAIN = "example.com"
 
@@ -71,8 +116,8 @@ async def create_order_in_opencart(order: Order) -> int | None:
     address_1 = (order.delivery_address or "").strip() or "Адрес не указан"
     if len(address_1) < 3:
         address_1 = "Адрес не указан"
-    postcode = "000000"  # OpenCart часто требует postcode; в заказе бота индекса нет
-    email = (order.email or "").strip() or config.order_email
+    postcode = ""  # В заказе бота индекса нет; не подставляем 000000, чтобы не было «Коломна 00000»
+    email = (order.email or "").strip()
     if not email:
         email = f"bot-order-{order.id}@{FALLBACK_EMAIL_DOMAIN}"
 
@@ -114,12 +159,23 @@ async def create_order_in_opencart(order: Order) -> int | None:
                 return None
 
             shipping_methods = await client.get_shipping_methods()
-            shipping_code = _first_shipping_code(shipping_methods)
+            shipping_code = _select_shipping_code(
+                shipping_methods,
+                delivery_city=(order.delivery_city or "").strip(),
+                delivery_cost=order.delivery_cost or 0,
+            )
+
+            comment_parts: list[str] = []
+            if (order.comment or "").strip():
+                comment_parts.append((order.comment or "").strip())
+            if order.desired_delivery_datetime and str(order.desired_delivery_datetime).strip():
+                comment_parts.append(f"Дата и время доставки: {order.desired_delivery_datetime.strip()}")
+            comment = "\n".join(comment_parts)
 
             oc_order_id = await client.add_order(
                 payment_method=payment_code,
                 shipping_method=shipping_code,
-                comment=(order.comment or "").strip(),
+                comment=comment,
             )
             logger.info(
                 "Заказ бота id={} создан в OpenCart как order_id={}",
@@ -156,17 +212,71 @@ def _first_key(d: dict[str, Any]) -> str | None:
     return next(iter(d.keys()))
 
 
-def _first_shipping_code(shipping_methods: dict[str, Any]) -> str | None:
-    """По структуре {ext: {quote: {code: ...}}} возвращает код вида ext.code.
+def _select_shipping_code(
+    shipping_methods: dict[str, Any],
+    delivery_city: str,
+    delivery_cost: int,
+) -> str | None:
+    """Выбирает код способа доставки по городу или стоимости, чтобы заказ в OpenCart
+    совпадал с выбором в боте (не «Самовывоз», если выбрана доставка по городу).
 
-    Сейчас выбирается первый попавшийся способ доставки. При необходимости
-    можно добавить приоритизацию по названию или коду модуля.
+    По структуре OpenCart {ext: {quote: {key: {code, title, cost}}}} ищет совпадение
+    по title (город) или cost; иначе первый не-самовывоз; иначе первый любой.
+
+    Args:
+        shipping_methods: Ответ get_shipping_methods().
+        delivery_city: Город доставки из заказа бота (например «Коломна»).
+        delivery_cost: Стоимость доставки в рублях (например 400).
+
+    Returns:
+        Код способа доставки (например flat.flat) или None.
     """
     if not shipping_methods:
         return None
+    city_lower = (delivery_city or "").strip().lower()
+    is_pickup_choice = city_lower in ("самовывоз", "pickup", "")
+    candidates: list[tuple[int, str]] = (
+        []
+    )  # приоритет: 0=город/стоимость, 1=самовывоз при выборе самовывоза, 2=не самовывоз, 3=любой
     for ext_key, ext_val in shipping_methods.items():
-        quote = ext_val.get("quote") if isinstance(ext_val, dict) else None
-        if quote and isinstance(quote, dict):
-            for quote_key in quote:
-                return f"{ext_key}.{quote_key}"
-    return None
+        if not isinstance(ext_val, dict):
+            continue
+        quote = ext_val.get("quote")
+        if not quote or not isinstance(quote, dict):
+            continue
+        for quote_key, quote_data in quote.items():
+            if not isinstance(quote_data, dict):
+                continue
+            code = quote_data.get("code") or f"{ext_key}.{quote_key}"
+            title = (quote_data.get("title") or "").strip().lower()
+            cost = quote_data.get("cost")
+            if cost is not None and not isinstance(cost, int | float):
+                try:
+                    cost = int(float(cost))
+                except (TypeError, ValueError):
+                    cost = 0
+            elif cost is None:
+                cost = 0
+            is_pickup = "самовывоз" in title or quote_key == "pickup"
+            if (
+                is_pickup_choice
+                and is_pickup
+                or not is_pickup_choice
+                and city_lower
+                and title
+                and city_lower in title
+                or not is_pickup_choice
+                and delivery_cost
+                and cost == delivery_cost
+            ):
+                candidates.append((0, code))
+            elif is_pickup_choice and not is_pickup:
+                candidates.append((2, code))
+            elif not is_pickup:
+                candidates.append((1, code))
+            else:
+                candidates.append((3, code))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]

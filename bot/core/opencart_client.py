@@ -395,6 +395,32 @@ class OpenCartClient:
             raise OpenCartAPIError("В ответе order/add нет order_id", response=body)
         return int(oid)
 
+    async def add_order_history(
+        self,
+        order_id: int,
+        order_status_id: int,
+        comment: str = "",
+        notify: bool = False,
+    ) -> None:
+        """Добавляет запись в историю заказа OpenCart (например, подтверждение оплаты).
+
+        Вызов может не поддерживаться стандартным API OpenCart; при ошибке — логируем и не
+        пробрасываем исключение, чтобы не ломать поток бота.
+
+        Args:
+            order_id: ID заказа в OpenCart.
+            order_status_id: ID статуса (например «В обработке»).
+            comment: Комментарий к записи (например «Платеж номер … подтвержден»).
+            notify: Уведомлять ли клиента.
+        """
+        data: dict[str, Any] = {
+            "order_id": order_id,
+            "order_status_id": order_status_id,
+            "comment": comment,
+            "notify": 1 if notify else 0,
+        }
+        await self._request("POST", "api/order/history", data=data)
+
     async def ensure_logged_in(self) -> None:
         """Выполняет логин, если токен ещё не получен."""
         if not self._api_token:

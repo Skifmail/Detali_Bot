@@ -221,6 +221,12 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось обновить статус заказа после оплаты.")
         return
 
+    if updated.opencart_order_id is not None:
+        from bot.services.opencart_order import add_payment_confirmation_to_opencart
+
+        payment_comment = f'Платеж номер "{updated.external_payment_id or updated.display_order_number}" подтвержден'
+        await add_payment_confirmation_to_opencart(updated.opencart_order_id, payment_comment)
+
     from .admin import update_admins_order_notification
 
     await update_admins_order_notification(bot=callback.bot, order_id=order_id)
