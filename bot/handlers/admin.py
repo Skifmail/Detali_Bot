@@ -121,7 +121,7 @@ TEXTS: dict[str, str] = {
     ),
     "client_message_no_contact": (
         "📦 Сообщение по заказу #{display_number}\n\n{admin_message}\n\n"
-        "📞 Телефоны поддержки: Поддержка\n\n"
+        "📞 Телефоны поддержки:\n\n"
         "+7 (916) 005-06-08\n"
         "+7 (916) 876-30-45"
     ),
