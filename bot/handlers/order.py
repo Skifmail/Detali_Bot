@@ -375,7 +375,8 @@ async def _ask_address(
     suggested_address = data.get("suggested_address") or data.get("last_address")
     delivery_city = data.get("delivery_city") or ""
 
-    if suggested_address:
+    # Не предлагать «Самовывоз» как адрес при доставке в город — это адрес из прошлого заказа с самовывозом.
+    if suggested_address and suggested_address.strip() != PICKUP_ADDRESS:
         builder = InlineKeyboardBuilder()
         builder.button(
             text="✅ Оставить этот адрес",
@@ -534,7 +535,7 @@ async def handle_checkout_start(
     last_address: str | None = None
     if last_orders:
         last_full_order = db.get_order(order_id=last_orders[0].id)
-        if last_full_order:
+        if last_full_order and last_full_order.delivery_address != PICKUP_ADDRESS:
             last_address = last_full_order.delivery_address
 
     saved = db.list_saved_recipients(user_id=current_user.id)
@@ -1578,12 +1579,8 @@ async def handle_order_confirm(
         await callback.answer(TEXTS["empty_cart"], show_alert=True)
         return
 
-    from bot.services.opencart_order import create_order_in_opencart
-
-    oc_order_id = await create_order_in_opencart(order)
-    if oc_order_id is not None:
-        db.set_order_opencart_id(order.id, oc_order_id)
-
+    # Заказ в OpenCart создаётся: при наличных — в handle_payment_method_cash после выбора способа;
+    # при ЮKassa — в handle_mock_payment после успешной оплаты.
     from .payment import show_payment_method_choice
 
     await show_payment_method_choice(

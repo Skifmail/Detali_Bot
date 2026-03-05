@@ -144,9 +144,7 @@ async def handle_payment_method_yookassa(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось обновить заказ.")
         return
 
-    from .admin import notify_admins_new_order
-
-    await notify_admins_new_order(bot=callback.bot, order=updated)
+    # Уведомление админам при ЮKassa отправляется после оплаты (в handle_mock_payment).
     # Для реальной интеграции с ЮKassa вместо мокового сценария нужно
     # вызывать создание платежа в ЮKassa API и переадресовывать пользователя.
     await _start_mock_payment(message=callback.message, order_id=order_id)
@@ -178,6 +176,12 @@ async def handle_payment_method_cash(callback: CallbackQuery) -> None:
     if updated is None:
         await callback.message.answer("Не удалось обновить заказ.")
         return
+
+    from bot.services.opencart_order import create_order_in_opencart
+
+    oc_order_id = await create_order_in_opencart(updated)
+    if oc_order_id is not None:
+        db.set_order_opencart_id(updated.id, oc_order_id)
 
     from .admin import notify_admins_new_order
 
@@ -231,15 +235,17 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось обновить статус заказа после оплаты.")
         return
 
-    if updated.opencart_order_id is not None:
-        from bot.services.opencart_order import add_payment_confirmation_to_opencart
+    from bot.services.opencart_order import add_payment_confirmation_to_opencart, create_order_in_opencart
 
+    oc_order_id = await create_order_in_opencart(updated)
+    if oc_order_id is not None:
+        db.set_order_opencart_id(updated.id, oc_order_id)
         payment_comment = f'Платеж номер "{updated.external_payment_id or updated.display_order_number}" подтвержден'
-        await add_payment_confirmation_to_opencart(updated.opencart_order_id, payment_comment)
+        await add_payment_confirmation_to_opencart(oc_order_id, payment_comment)
 
-    from .admin import update_admins_order_notification
+    from .admin import notify_admins_new_order
 
-    await update_admins_order_notification(bot=callback.bot, order_id=order_id)
+    await notify_admins_new_order(bot=callback.bot, order=updated)
 
     success_text = TEXTS["success"].format(
         display_number=updated.display_order_number,
