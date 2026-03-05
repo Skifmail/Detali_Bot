@@ -392,6 +392,21 @@ async def handle_admin_more_message(message: Message) -> None:
     )
 
 
+@router.message(F.text == KB_TEXTS["menu_admin_contact"])
+async def handle_admin_contact_message(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    """Запуск редактирования контактов для клиентов по кнопке «Контакт для клиентов»."""
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+        return
+    db = get_db_from_message(message)
+    contacts = db.get_admin_contacts()
+    await state.set_state(AdminContactForm.contact)
+    await message.answer(_format_admin_contacts_list(contacts))
+    await message.answer(TEXTS["contact_edit_prompt"])
+
+
 @router.message(F.text == KB_TEXTS["menu_sync_catalog"])
 async def handle_admin_sync_catalog_message(message: Message) -> None:
     """Запускает синхронизацию каталога по кнопке «Обновить каталог» в нижнем меню."""

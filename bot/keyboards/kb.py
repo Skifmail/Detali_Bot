@@ -34,6 +34,7 @@ TEXTS: dict[str, str] = {
     "menu_more": "Ещё",
     "menu_sync_catalog": "🔄 Обновить каталог",
     "menu_users": "👥 Пользователи",
+    "menu_admin_contact": "📞 Контакты админов для клиентов",
     "admin_orders_search": "🔍 Найти заказ",
     "admin_orders_new": "Новые",
     "admin_orders_delivery": "В доставке",
@@ -88,11 +89,13 @@ def build_admin_more_reply_keyboard() -> ReplyKeyboardMarkup:
     """Создаёт нижнюю (reply) клавиатуру меню «Ещё»: дополнительные действия и Назад.
 
     Returns:
-        ReplyKeyboardMarkup: Клавиатура с кнопками Обновить каталог, Пользователи, Назад.
+        ReplyKeyboardMarkup: Клавиатура с кнопками Обновить каталог, Пользователи,
+            Контакт для клиентов, Назад.
     """
     builder = ReplyKeyboardBuilder()
     builder.row(KeyboardButton(text=TEXTS["menu_sync_catalog"]))
     builder.row(KeyboardButton(text=TEXTS["menu_users"]))
+    builder.row(KeyboardButton(text=TEXTS["menu_admin_contact"]))
     builder.row(KeyboardButton(text=TEXTS["back"]))
     return builder.as_markup(resize_keyboard=True)
 
