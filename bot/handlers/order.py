@@ -1375,6 +1375,12 @@ async def handle_use_saved_address(
         await state.set_state(OrderForm.address)
         return
 
+    # При доставке в город нельзя подставлять «Самовывоз» (например из сохранённого получателя).
+    if suggested_address.strip() == PICKUP_ADDRESS:
+        await callback.message.answer(TEXTS["ask_address"])
+        await state.set_state(OrderForm.address)
+        return
+
     await state.update_data(address=suggested_address)
 
     r_name = data.get("recipient_new_name")
