@@ -9,7 +9,7 @@ from ..utils import is_admin
 
 TEXTS: dict[str, str] = {
     "contact_prompt": ("Чтобы связаться с нами, напишите или позвоните по этим контактам:\n\n{contacts}"),
-    "no_contacts": ("Телефоны поддержки: Поддержка\n\n" "+7 (916) 005-06-08\n" "+7 (916) 876-30-45"),
+    "no_contacts": ("Телефоны поддержки:\n\n" "+7 (916) 005-06-08\n" "+7 (916) 876-30-45"),
 }
 
 router = Router(name="contact_fallback")
