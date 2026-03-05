@@ -22,12 +22,14 @@ TEXTS: dict[str, str] = {
     "success": "✅ Оплата прошла успешно!\n\n"
     "Номер заказа: <b>#{display_number}</b>\n"
     "Сумма: <b>{total} ₽</b>\n"
+    "Дата и время доставки: {desired_datetime}\n"
     "Статус: ✅ Оплачен (для демо).",
     "success_pickup": "\n\n📍 Забрать заказ можно по адресу:\n{address}",
     "cash_success": (
         "✅ Заказ принят.\n\n"
         "Номер заказа: <b>#{display_number}</b>\n"
-        "Сумма к оплате: <b>{total} ₽</b>\n\n"
+        "Сумма к оплате: <b>{total} ₽</b>\n"
+        "Дата и время доставки: {desired_datetime}\n\n"
         "Оплата наличными при получении."
     ),
     "order_created_prefix": "✅ Заказ создан.\n\n{body}",
@@ -187,9 +189,11 @@ async def handle_payment_method_cash(callback: CallbackQuery) -> None:
 
     await notify_admins_new_order(bot=callback.bot, order=updated)
 
+    desired_datetime = (updated.desired_delivery_datetime or "").strip() or "—"
     text = TEXTS["cash_success"].format(
         display_number=updated.display_order_number,
         total=updated.total_amount,
+        desired_datetime=desired_datetime,
     )
     if updated.delivery_address == "Самовывоз":
         text += TEXTS["success_pickup"].format(address=PICKUP_ADDRESS_DISPLAY)
@@ -247,9 +251,11 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
 
     await notify_admins_new_order(bot=callback.bot, order=updated)
 
+    desired_datetime = (updated.desired_delivery_datetime or "").strip() or "—"
     success_text = TEXTS["success"].format(
         display_number=updated.display_order_number,
         total=updated.total_amount,
+        desired_datetime=desired_datetime,
     )
     if updated.delivery_address == "Самовывоз":
         success_text += TEXTS["success_pickup"].format(address=PICKUP_ADDRESS_DISPLAY)

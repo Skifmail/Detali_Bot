@@ -392,7 +392,7 @@ async def handle_category_selected(
     # Удаляем сообщение с категориями и показываем первую страницу товаров.
     try:
         await callback.message.delete()
-    except TelegramBadRequest:
+    except (TelegramBadRequest, TelegramNetworkError):
         pass
 
     db: Database = callback.bot.db

@@ -31,7 +31,12 @@ TEXTS: dict[str, str] = {
     "orders_header": "📦 Последние заказы:",
     "repeat_done": "✅ Заказ скопирован в корзину. Откроем её для оформления.",
     "order_detail": (
-        "📦 Заказ #{display_number}\n" "Статус: {status}\n" "Оплата: {payment_info}\n" "Сумма: {total} ₽\n\n" "{items}"
+        "📦 Заказ #{display_number}\n"
+        "Статус: {status}\n"
+        "Оплата: {payment_info}\n"
+        "Сумма: {total} ₽\n"
+        "Дата и время доставки: {desired_datetime}\n\n"
+        "{items}"
     ),
     "order_item": "• {title} — {price} ₽ × {qty} = {line_total} ₽",
     "cancel_done": "Заказ #{display_number} отменён.",
@@ -134,11 +139,13 @@ async def handle_account_order_detail(callback: CallbackQuery) -> None:
         for item in order.items
     ]
     payment_info = _format_payment_info_user(order)
+    desired_datetime = (order.desired_delivery_datetime or "").strip() or "—"
     text = TEXTS["order_detail"].format(
         display_number=order.display_order_number,
         status=order.status.human_readable,
         payment_info=payment_info,
         total=order.total_amount,
+        desired_datetime=desired_datetime,
         items="\n".join(lines) if lines else "—",
     )
     can_cancel = order.status in (OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT)
