@@ -1334,6 +1334,53 @@ class Database:
             )
         return summaries
 
+    def list_orders_page(
+        self,
+        *,
+        limit: int = RECENT_ORDERS_LIMIT,
+        offset: int = 0,
+    ) -> list[OrderSummary]:
+        """Возвращает страницу заказов для админ-панели.
+
+        Args:
+            limit: Максимальное количество заказов на странице.
+            offset: Смещение (количество пропускаемых записей).
+
+        Returns:
+            list[OrderSummary]: Список кратких представлений заказов.
+        """
+
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    display_order_number,
+                    status,
+                    total_amount,
+                    created_at
+                FROM orders
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?;
+                """,
+                (limit, offset),
+            )
+            rows = cursor.fetchall()
+
+        summaries: list[OrderSummary] = []
+        for row in rows:
+            summaries.append(
+                OrderSummary(
+                    id=int(row["id"]),
+                    display_order_number=int(row["display_order_number"]),
+                    status=OrderStatus(row["status"]),
+                    total_amount=int(row["total_amount"]),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                ),
+            )
+        return summaries
+
     def list_orders_by_statuses(
         self,
         statuses: Iterable[OrderStatus],
@@ -1602,6 +1649,15 @@ class Database:
             total_orders=total_orders,
             total_revenue=total_revenue,
         )
+
+    def count_orders(self) -> int:
+        """Возвращает общее количество заказов."""
+
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) AS cnt FROM orders;")
+            row = cursor.fetchone()
+        return int(row["cnt"]) if row is not None else 0
 
     # Преобразование SQLite-строк в модели
 

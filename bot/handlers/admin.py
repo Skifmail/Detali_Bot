@@ -18,17 +18,16 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from loguru import logger
 
-from ..database.db import Database
+from ..database.db import RECENT_ORDERS_LIMIT, Database
 from ..database.models import Order, OrderStatus, StatsSummary, User
-from ..keyboards.kb import (
-    TEXTS as KB_TEXTS,
-)
+from ..keyboards.kb import TEXTS as KB_TEXTS
 from ..keyboards.kb import (
     build_admin_main_keyboard,
     build_admin_more_keyboard,
     build_admin_more_reply_keyboard,
     build_admin_order_details_keyboard,
     build_admin_orders_keyboard,
+    build_admin_orders_reply_keyboard,
     build_admin_status_change_keyboard,
     build_main_menu_keyboard,
 )
@@ -131,6 +130,20 @@ class AdminOrderSearchForm(StatesGroup):
     """Состояния FSM для поиска заказа администратором."""
 
     query = State()
+
+
+@router.message(F.text == KB_TEXTS["admin_orders_search"])
+async def handle_admin_orders_search_start(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    """Запускает сценарий поиска заказа по номеру или телефону из reply-клавиатуры."""
+
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+        return
+
+    await state.set_state(AdminOrderSearchForm.query)
+    await message.answer(TEXTS["orders_search_prompt"])
 
 
 def _build_broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -277,14 +290,27 @@ async def handle_admin_orders_message(message: Message) -> None:
     if not is_admin(message.from_user.id, message.bot):
         return
     db = get_db_from_message(message)
-    orders = db.list_recent_orders()
-    text = TEXTS["orders_header"]
-    if not orders:
-        text += "\n\nПока нет заказов."
+    total = db.count_orders()
+    page = 0
+    orders = db.list_orders_page(limit=RECENT_ORDERS_LIMIT, offset=page * RECENT_ORDERS_LIMIT)
+    # Нижняя клавиатура с поиском и фильтрами
     await message.answer(
-        text,
-        reply_markup=build_admin_orders_keyboard(orders=orders),
+        "Управление заказами:",
+        reply_markup=build_admin_orders_reply_keyboard(),
     )
+    # Отдельным сообщением показываем список последних заказов с инлайн-кнопками
+    if orders:
+        await message.answer(
+            TEXTS["orders_header"],
+            reply_markup=build_admin_orders_keyboard(
+                orders=orders,
+                page=page,
+                page_size=RECENT_ORDERS_LIMIT,
+                total_count=total,
+            ),
+        )
+    else:
+        await message.answer(TEXTS["orders_header"] + "\n\nПока нет заказов.")
 
 
 @router.message(F.text == KB_TEXTS["menu_stats"])
@@ -520,20 +546,29 @@ async def handle_admin_orders_callback(callback: CallbackQuery) -> None:
         return
 
     db = get_db_from_callback(callback)
-    orders = db.list_recent_orders()
-    text = TEXTS["orders_header"]
-    if not orders:
-        text += "\n\nПока нет заказов."
+    total = db.count_orders()
+    page = 0
+    orders = db.list_orders_page(limit=RECENT_ORDERS_LIMIT, offset=page * RECENT_ORDERS_LIMIT)
 
-    try:
-        await callback.message.edit_text(
-            text=text,
-            reply_markup=build_admin_orders_keyboard(orders=orders),
+    # Отдельным сообщением показываем reply-клавиатуру управления заказами
+    await callback.message.answer(
+        "Управление заказами:",
+        reply_markup=build_admin_orders_reply_keyboard(),
+    )
+
+    # И список заказов с инлайн-кнопками
+    if orders:
+        await callback.message.answer(
+            TEXTS["orders_header"],
+            reply_markup=build_admin_orders_keyboard(
+                orders=orders,
+                page=page,
+                page_size=RECENT_ORDERS_LIMIT,
+                total_count=total,
+            ),
         )
-    except TelegramBadRequest as err:
-        if "message is not modified" not in str(err).lower():
-            logger.debug("Ошибка при обновлении списка заказов: {err}", err=err)
-            raise
+    else:
+        await callback.message.answer(TEXTS["orders_header"] + "\n\nПока нет заказов.")
 
 
 @router.callback_query(F.data == "admin:orders_search")
@@ -549,6 +584,7 @@ async def handle_admin_orders_search_callback(
     if not is_admin(callback.from_user.id, callback.bot):
         return
 
+    # Поддержка старого сценария через инлайн-кнопку (если где-то осталась)
     await state.set_state(AdminOrderSearchForm.query)
     try:
         await callback.message.edit_text(
@@ -607,14 +643,88 @@ async def handle_admin_orders_search_query(
 
     await message.answer(
         TEXTS["orders_search_results"].format(query=raw_query),
-        reply_markup=build_admin_orders_keyboard(orders=summaries),
+        reply_markup=build_admin_orders_keyboard(
+            orders=summaries,
+            page=0,
+            page_size=len(summaries) or 1,
+            total_count=len(summaries),
+        ),
         parse_mode="HTML",
     )
 
 
-@router.callback_query(F.data.startswith("admin:orders_filter:"))
-async def handle_admin_orders_filter(callback: CallbackQuery) -> None:
-    """Фильтрует список заказов в админке по статусу."""
+async def _send_filtered_orders(
+    message: Message,
+    *,
+    statuses: list[OrderStatus],
+    header_text: str,
+) -> None:
+    """Отправляет администратору список заказов по указанным статусам."""
+
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+        return
+
+    db = get_db_from_message(message)
+    summaries = db.list_orders_by_statuses(statuses=statuses)
+    text = header_text
+    if not summaries:
+        text += "\n\nПока нет заказов с таким статусом."
+
+    await message.answer(
+        text=text,
+        reply_markup=build_admin_orders_keyboard(
+            orders=summaries,
+            page=0,
+            page_size=len(summaries) or 1,
+            total_count=len(summaries),
+        ),
+    )
+
+
+@router.message(F.text == KB_TEXTS["admin_orders_new"])
+async def handle_admin_orders_filter_new(message: Message) -> None:
+    """Фильтр заказов: новые и в работе."""
+
+    await _send_filtered_orders(
+        message,
+        statuses=[
+            OrderStatus.NEW,
+            OrderStatus.AWAITING_PAYMENT,
+            OrderStatus.PROCESSING,
+            OrderStatus.ASSEMBLING,
+        ],
+        header_text=TEXTS["orders_filter_new"],
+    )
+
+
+@router.message(F.text == KB_TEXTS["admin_orders_delivery"])
+async def handle_admin_orders_filter_delivery(message: Message) -> None:
+    """Фильтр заказов: в доставке (у курьера)."""
+
+    await _send_filtered_orders(
+        message,
+        statuses=[OrderStatus.COURIER],
+        header_text=TEXTS["orders_filter_delivery"],
+    )
+
+
+@router.message(F.text == KB_TEXTS["admin_orders_paid"])
+async def handle_admin_orders_filter_paid(message: Message) -> None:
+    """Фильтр заказов: оплаченные и доставленные."""
+
+    await _send_filtered_orders(
+        message,
+        statuses=[
+            OrderStatus.PAID,
+            OrderStatus.DELIVERED,
+        ],
+        header_text=TEXTS["orders_filter_paid"],
+    )
+
+
+@router.callback_query(F.data.startswith("admin:orders_page:"))
+async def handle_admin_orders_page(callback: CallbackQuery) -> None:
+    """Обрабатывает нажатие кнопок пагинации списка заказов."""
 
     await callback.answer()
     if callback.message is None or callback.from_user is None:
@@ -622,42 +732,43 @@ async def handle_admin_orders_filter(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id, callback.bot):
         return
 
-    _, _, filter_key = callback.data.split(":", maxsplit=2)
+    prefix = "admin:orders_page:"
+    raw = callback.data or ""
+    if not raw.startswith(prefix):
+        return
+    try:
+        page = int(raw[len(prefix) :])
+    except ValueError:
+        return
+    if page < 0:
+        page = 0
 
     db = get_db_from_callback(callback)
-    if filter_key == "new":
-        statuses = [
-            OrderStatus.NEW,
-            OrderStatus.AWAITING_PAYMENT,
-            OrderStatus.PROCESSING,
-            OrderStatus.ASSEMBLING,
-        ]
-        header = TEXTS["orders_filter_new"]
-    elif filter_key == "delivery":
-        statuses = [OrderStatus.COURIER]
-        header = TEXTS["orders_filter_delivery"]
-    elif filter_key == "paid":
-        statuses = [
-            OrderStatus.PAID,
-            OrderStatus.DELIVERED,
-        ]
-        header = TEXTS["orders_filter_paid"]
-    else:
-        statuses = []
-        header = TEXTS["orders_header"]
+    total = db.count_orders()
+    max_page = max((total - 1) // RECENT_ORDERS_LIMIT, 0) if total > 0 else 0
+    if page > max_page:
+        page = max_page
 
-    summaries = db.list_orders_by_statuses(statuses=statuses) if statuses else db.list_recent_orders()
-    text = header
-    if not summaries:
-        text += "\n\nПока нет заказов с таким статусом."
+    offset = page * RECENT_ORDERS_LIMIT
+    orders = db.list_orders_page(limit=RECENT_ORDERS_LIMIT, offset=offset)
+
+    text = TEXTS["orders_header"]
+    if not orders:
+        text += "\n\nПока нет заказов."
 
     try:
         await callback.message.edit_text(
             text=text,
-            reply_markup=build_admin_orders_keyboard(orders=summaries),
+            reply_markup=build_admin_orders_keyboard(
+                orders=orders,
+                page=page,
+                page_size=RECENT_ORDERS_LIMIT,
+                total_count=total,
+            ),
         )
     except TelegramBadRequest as err:
-        logger.debug("Ошибка при обновлении списка заказов по фильтру: {err}", err=err)
+        if "message is not modified" not in str(err).lower():
+            logger.debug("Ошибка при переключении страницы заказов: {err}", err=err)
 
 
 @router.callback_query(F.data.startswith("admin:order:cancel:"))

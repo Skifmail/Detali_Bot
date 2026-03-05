@@ -34,6 +34,10 @@ TEXTS: dict[str, str] = {
     "menu_more": "Ещё",
     "menu_sync_catalog": "🔄 Обновить каталог",
     "menu_users": "👥 Пользователи",
+    "admin_orders_search": "🔍 Найти заказ",
+    "admin_orders_new": "Новые",
+    "admin_orders_delivery": "В доставке",
+    "admin_orders_paid": "Оплаченные",
     "back": "← Назад",
     "start_over": "🏠 Главное меню",
     "cart_checkout": "🧾 Оформить заказ",
@@ -88,6 +92,22 @@ def build_admin_more_reply_keyboard() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.row(KeyboardButton(text=TEXTS["menu_sync_catalog"]))
     builder.row(KeyboardButton(text=TEXTS["menu_users"]))
+    builder.row(KeyboardButton(text=TEXTS["back"]))
+    return builder.as_markup(resize_keyboard=True)
+
+
+def build_admin_orders_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Создаёт нижнюю (reply) клавиатуру управления заказами для админа.
+
+    Returns:
+        ReplyKeyboardMarkup: Кнопки поиска и фильтров заказов.
+    """
+
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text=TEXTS["admin_orders_search"]))
+    builder.row(KeyboardButton(text=TEXTS["admin_orders_new"]))
+    builder.row(KeyboardButton(text=TEXTS["admin_orders_delivery"]))
+    builder.row(KeyboardButton(text=TEXTS["admin_orders_paid"]))
     builder.row(KeyboardButton(text=TEXTS["back"]))
     return builder.as_markup(resize_keyboard=True)
 
@@ -697,50 +717,56 @@ def build_admin_more_keyboard() -> InlineKeyboardMarkup:
 
 def build_admin_orders_keyboard(
     orders: Iterable[OrderSummary],
+    *,
+    page: int,
+    page_size: int,
+    total_count: int,
 ) -> InlineKeyboardMarkup:
-    """Создаёт клавиатуру списка заказов в админ-панели.
-
-    Включает:
-    - кнопку поиска заказа;
-    - фильтры по статусу («Новые», «В доставке», «Оплаченные»);
-    - список последних заказов;
-    - кнопку «Назад».
+    """Создаёт инлайн-клавиатуру списка заказов в админ-панели.
 
     Args:
-        orders (Iterable[OrderSummary]): Коллекция заказов.
+        orders (Iterable[OrderSummary]): Коллекция заказов текущей страницы.
+        page (int): Номер страницы (0‑индекс).
+        page_size (int): Размер страницы (количество заказов).
+        total_count (int): Общее количество заказов.
 
     Returns:
-        InlineKeyboardMarkup: Инлайн-клавиатура с выбором заказа и дополнительными действиями.
+        InlineKeyboardMarkup: Инлайн-клавиатура с выбором заказа и навигацией по страницам.
     """
 
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(
-            text="🔍 Найти заказ",
-            callback_data="admin:orders_search",
-        ),
-    )
-    builder.row(
-        InlineKeyboardButton(
-            text="Новые",
-            callback_data="admin:orders_filter:new",
-        ),
-        InlineKeyboardButton(
-            text="В доставке",
-            callback_data="admin:orders_filter:delivery",
-        ),
-        InlineKeyboardButton(
-            text="Оплаченные",
-            callback_data="admin:orders_filter:paid",
-        ),
-    )
-
     for order in orders:
         dt_str = order.created_at.strftime("%d.%m.%y %H:%M")
         builder.button(
             text=f"#{order.display_order_number} — {order.status.human_readable} · {dt_str}",
             callback_data=f"admin:order:{order.id}",
         )
+
+    max_page = max((total_count - 1) // page_size, 0) if page_size > 0 else 0
+    if total_count > page_size:
+        nav_row: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav_row.append(
+                InlineKeyboardButton(
+                    text="◀️",
+                    callback_data=f"admin:orders_page:{page-1}",
+                ),
+            )
+        nav_row.append(
+            InlineKeyboardButton(
+                text=f"Стр. {page+1}/{max_page+1}",
+                callback_data="noop",
+            ),
+        )
+        if page < max_page:
+            nav_row.append(
+                InlineKeyboardButton(
+                    text="▶️",
+                    callback_data=f"admin:orders_page:{page+1}",
+                ),
+            )
+        builder.row(*nav_row)
+
     builder.button(
         text=TEXTS["back"],
         callback_data="admin:back",
