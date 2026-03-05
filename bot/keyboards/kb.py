@@ -38,6 +38,7 @@ TEXTS: dict[str, str] = {
     "admin_orders_new": "Новые",
     "admin_orders_delivery": "В доставке",
     "admin_orders_paid": "Оплаченные",
+    "admin_orders_export": "📥 Выгрузить заказы",
     "back": "← Назад",
     "start_over": "🏠 Главное меню",
     "cart_checkout": "🧾 Оформить заказ",
@@ -104,12 +105,41 @@ def build_admin_orders_reply_keyboard() -> ReplyKeyboardMarkup:
     """
 
     builder = ReplyKeyboardBuilder()
-    builder.row(KeyboardButton(text=TEXTS["admin_orders_search"]))
-    builder.row(KeyboardButton(text=TEXTS["admin_orders_new"]))
-    builder.row(KeyboardButton(text=TEXTS["admin_orders_delivery"]))
-    builder.row(KeyboardButton(text=TEXTS["admin_orders_paid"]))
+    builder.row(
+        KeyboardButton(text=TEXTS["admin_orders_search"]),
+        KeyboardButton(text=TEXTS["admin_orders_new"]),
+    )
+    builder.row(
+        KeyboardButton(text=TEXTS["admin_orders_delivery"]),
+        KeyboardButton(text=TEXTS["admin_orders_paid"]),
+    )
+    builder.row(KeyboardButton(text=TEXTS["admin_orders_export"]))
     builder.row(KeyboardButton(text=TEXTS["back"]))
     return builder.as_markup(resize_keyboard=True)
+
+
+def build_export_orders_period_keyboard() -> InlineKeyboardMarkup:
+    """Создаёт инлайн-клавиатуру выбора периода для выгрузки заказов в CSV.
+
+    Returns:
+        InlineKeyboardMarkup: Кнопки «Сегодня», «Неделя», «Месяц».
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="Сегодня",
+            callback_data="admin:export_orders:today",
+        ),
+        InlineKeyboardButton(
+            text="Неделя",
+            callback_data="admin:export_orders:week",
+        ),
+        InlineKeyboardButton(
+            text="Месяц",
+            callback_data="admin:export_orders:month",
+        ),
+    )
+    return builder.as_markup()
 
 
 def build_categories_keyboard(categories: Iterable[Category]) -> InlineKeyboardMarkup:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import re
+from datetime import UTC, datetime, timedelta
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
@@ -9,6 +12,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -19,7 +23,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from loguru import logger
 
 from ..database.db import RECENT_ORDERS_LIMIT, Database
-from ..database.models import Order, OrderStatus, StatsSummary, User
+from ..database.models import Order, OrderStatus, User
 from ..keyboards.kb import TEXTS as KB_TEXTS
 from ..keyboards.kb import (
     build_admin_main_keyboard,
@@ -29,6 +33,7 @@ from ..keyboards.kb import (
     build_admin_orders_keyboard,
     build_admin_orders_reply_keyboard,
     build_admin_status_change_keyboard,
+    build_export_orders_period_keyboard,
     build_main_menu_keyboard,
 )
 from ..services.catalog_sync import sync_catalog_from_opencart
@@ -92,6 +97,9 @@ TEXTS: dict[str, str] = {
     "orders_filter_new": "📦 Заказы — Новые:",
     "orders_filter_delivery": "📦 Заказы — В доставке:",
     "orders_filter_paid": "📦 Заказы — Оплаченные:",
+    "export_orders_prompt": "📥 Выберите период для выгрузки заказов в CSV:",
+    "export_orders_empty": "В выбранном периоде заказов нет.",
+    "export_orders_done": "✅ Файл с заказами отправлен ({count} заказов).",
 }
 
 router = Router(name="admin")
@@ -319,13 +327,8 @@ async def handle_admin_stats_message(message: Message) -> None:
     if not is_admin(message.from_user.id, message.bot):
         return
     db = get_db_from_message(message)
-    stats: StatsSummary = db.get_stats()
-    text = TEXTS["stats"].format(
-        users=stats.total_users,
-        orders=stats.total_orders,
-        revenue=stats.total_revenue,
-    )
-    await message.answer(text=text)
+    text = _format_stats_detailed(db)
+    await message.answer(text=text, parse_mode="HTML")
 
 
 @router.message(F.text == KB_TEXTS["menu_broadcast"])
@@ -395,6 +398,55 @@ async def handle_admin_back_reply(message: Message) -> None:
     )
 
 
+@router.message(F.text == KB_TEXTS["admin_orders_export"])
+async def handle_admin_export_orders_start(message: Message) -> None:
+    """Запрос периода выгрузки заказов в CSV."""
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+        return
+    await message.answer(
+        TEXTS["export_orders_prompt"],
+        reply_markup=build_export_orders_period_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("admin:export_orders:"))
+async def handle_admin_export_orders_period(callback: CallbackQuery) -> None:
+    """Формирует CSV заказов за выбранный период и отправляет файлом."""
+    await callback.answer()
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+    period = (callback.data or "").split(":")[-1]
+    now = datetime.now(UTC)
+    if period == "today":
+        from_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        to_dt = now
+        label = "today"
+    elif period == "week":
+        from_dt = now - timedelta(days=7)
+        to_dt = now
+        label = "week"
+    elif period == "month":
+        from_dt = now - timedelta(days=30)
+        to_dt = now
+        label = "month"
+    else:
+        await callback.message.answer("Неизвестный период.")
+        return
+    db = get_db_from_callback(callback)
+    orders = db.list_orders_between(from_dt=from_dt, to_dt=to_dt)
+    if not orders:
+        await callback.message.answer(TEXTS["export_orders_empty"])
+        return
+    csv_bytes = _orders_to_csv(orders)
+    date_str = now.strftime("%Y-%m-%d")
+    filename = f"orders_{label}_{date_str}.csv"
+    doc = BufferedInputFile(csv_bytes, filename=filename)
+    await callback.message.answer_document(document=doc)
+    await callback.message.answer(TEXTS["export_orders_done"].format(count=len(orders)))
+
+
 def _format_users_message(users: list[User], total: int, limit: int) -> str:
     """Формирует текст сообщения со списком пользователей (до 4096 символов)."""
     if not users:
@@ -409,6 +461,91 @@ def _format_users_message(users: list[User], total: int, limit: int) -> str:
         text += TEXTS["users_more"].format(limit=limit, total=total)
     if len(text) > 4000:
         text = text[:3997] + "\n…"
+    return text
+
+
+def _orders_to_csv(orders: list[Order]) -> bytes:
+    """Формирует CSV с заказами в кодировке UTF-8 с BOM для Excel.
+
+    Args:
+        orders: Список заказов с позициями.
+
+    Returns:
+        bytes: Содержимое CSV-файла.
+    """
+    buffer = io.StringIO()
+    buffer.write("\ufeff")  # BOM для Excel
+    writer = csv.writer(buffer, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(
+        [
+            "Номер заказа",
+            "Дата",
+            "Статус",
+            "Получатель",
+            "Телефон",
+            "Email",
+            "Город",
+            "Адрес",
+            "Желаемая дата доставки",
+            "Комментарий",
+            "Товары",
+            "Доставка (₽)",
+            "Итого (₽)",
+            "Способ оплаты",
+        ]
+    )
+    for order in orders:
+        items_str = "; ".join(f"{item.product.title} × {item.quantity}" for item in order.items)
+        payment = (order.payment_method or "—").strip()
+        if payment == "cash":
+            payment = "Наличные"
+        elif payment == "yookassa":
+            payment = "ЮКassa"
+        writer.writerow(
+            [
+                order.display_order_number,
+                order.created_at.strftime("%d.%m.%Y %H:%M"),
+                order.status.human_readable,
+                order.customer_name,
+                order.phone,
+                order.email or "—",
+                order.delivery_city or "—",
+                order.delivery_address,
+                order.desired_delivery_datetime or "—",
+                (order.comment or "—").replace("\n", " "),
+                items_str,
+                order.delivery_cost,
+                order.total_amount,
+                payment,
+            ]
+        )
+    return buffer.getvalue().encode("utf-8")
+
+
+def _format_stats_detailed(db: Database) -> str:
+    """Формирует расширенный текст статистики: базовая + топ товаров, выручка по городам, заказы по статусам."""
+    stats = db.get_stats()
+    text = TEXTS["stats"].format(
+        users=stats.total_users,
+        orders=stats.total_orders,
+        revenue=stats.total_revenue,
+    )
+    top = db.get_top_products_by_sales(limit=5)
+    if top:
+        text += "\n\n<b>Топ-5 товаров по продажам:</b>\n"
+        for i, (title, qty) in enumerate(top, 1):
+            short = (title[:50] + "…") if len(title) > 50 else title
+            text += f"{i}. {short} — {qty} шт.\n"
+    by_city = db.get_revenue_by_city()
+    if by_city:
+        text += "\n<b>Выручка по городам:</b>\n"
+        for city, revenue in by_city:
+            text += f"• {city}: {revenue} ₽\n"
+    by_status = db.get_orders_count_by_status()
+    if by_status:
+        text += "\n<b>Заказы по статусам:</b>\n"
+        for status, cnt in by_status:
+            text += f"• {status.human_readable}: {cnt}\n"
     return text
 
 
@@ -1052,14 +1189,9 @@ async def handle_admin_stats(callback: CallbackQuery) -> None:
         return
 
     db = get_db_from_callback(callback)
-    stats: StatsSummary = db.get_stats()
-    text = TEXTS["stats"].format(
-        users=stats.total_users,
-        orders=stats.total_orders,
-        revenue=stats.total_revenue,
-    )
+    text = _format_stats_detailed(db)
     try:
-        await callback.message.edit_text(text=text)
+        await callback.message.edit_text(text=text, parse_mode="HTML")
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e).lower():
             raise

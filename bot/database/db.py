@@ -1659,6 +1659,102 @@ class Database:
             row = cursor.fetchone()
         return int(row["cnt"]) if row is not None else 0
 
+    def list_orders_between(
+        self,
+        from_dt: datetime,
+        to_dt: datetime,
+    ) -> list[Order]:
+        """Возвращает заказы, созданные в указанном периоде (включительно).
+
+        Args:
+            from_dt: Начало периода.
+            to_dt: Конец периода.
+
+        Returns:
+            list[Order]: Список заказов с позициями, от новых к старым.
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id FROM orders
+                WHERE created_at >= ? AND created_at <= ?
+                ORDER BY created_at DESC;
+                """,
+                (from_dt.isoformat(), to_dt.isoformat()),
+            )
+            rows = cursor.fetchall()
+        order_ids = [int(r["id"]) for r in rows]
+        result: list[Order] = []
+        for oid in order_ids:
+            order = self.get_order(oid)
+            if order is not None:
+                result.append(order)
+        return result
+
+    def get_top_products_by_sales(self, limit: int = 5) -> list[tuple[str, int]]:
+        """Возвращает топ товаров по количеству проданных единиц.
+
+        Args:
+            limit: Максимальное количество позиций.
+
+        Returns:
+            list[tuple[str, int]]: Пары (название товара, суммарное количество).
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT p.title, SUM(oi.quantity) AS total_qty
+                FROM order_items oi
+                JOIN products p ON p.id = oi.product_id
+                GROUP BY oi.product_id
+                ORDER BY total_qty DESC
+                LIMIT ?;
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+        return [(str(row["title"]), int(row["total_qty"])) for row in rows]
+
+    def get_revenue_by_city(self) -> list[tuple[str, int]]:
+        """Возвращает выручку по городам доставки.
+
+        Returns:
+            list[tuple[str, int]]: Пары (город, выручка в рублях).
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT COALESCE(delivery_city, '—') AS city, SUM(total_amount) AS revenue
+                FROM orders
+                GROUP BY delivery_city
+                ORDER BY revenue DESC;
+                """,
+            )
+            rows = cursor.fetchall()
+        return [(str(row["city"]), int(row["revenue"])) for row in rows]
+
+    def get_orders_count_by_status(self) -> list[tuple[OrderStatus, int]]:
+        """Возвращает количество заказов по каждому статусу.
+
+        Returns:
+            list[tuple[OrderStatus, int]]: Пары (статус, количество).
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT status, COUNT(*) AS cnt
+                FROM orders
+                GROUP BY status
+                ORDER BY cnt DESC;
+                """,
+            )
+            rows = cursor.fetchall()
+        return [(OrderStatus(row["status"]), int(row["cnt"])) for row in rows]
+
     # Преобразование SQLite-строк в модели
 
     @staticmethod
