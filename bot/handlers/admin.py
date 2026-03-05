@@ -46,6 +46,7 @@ TEXTS: dict[str, str] = {
         "─────────────────────\n"
         "<b>👤 Получатель</b> {customer_name}\n"
         "<b>📞 Телефон</b> {phone}\n"
+        "<b>📧 Email</b> {email}\n"
         "─────────────────────\n"
         "<b>🚚 Доставка</b>\n"
         "Город: {delivery_city}\n"
@@ -169,6 +170,7 @@ def _format_order_details(order: Order) -> str:
         user_id=order.user_id,
         customer_name=order.customer_name,
         phone=order.phone,
+        email=order.email or "—",
         delivery_address=order.delivery_address,
         delivery_city=delivery_city,
         delivery_cost=order.delivery_cost,
