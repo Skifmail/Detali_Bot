@@ -586,6 +586,7 @@ async def handle_admin_order_message_text(
     confirm_msg = await message.answer(TEXTS["order_message_sent"])
     prompt_message_id = data.get("admin_order_message_prompt_message_id")
     chat_id = message.chat.id
+    await asyncio.sleep(3)
     for mid in (prompt_message_id, message.message_id, confirm_msg.message_id):
         if mid is None:
             continue
