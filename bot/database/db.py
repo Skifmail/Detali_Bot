@@ -1548,23 +1548,26 @@ class Database:
             Order: Модель заказа.
         """
 
-        delivery_city = row["delivery_city"]
-        delivery_cost = row["delivery_cost"]
-        desired_dt = row["desired_delivery_datetime"]
-        pm = row["payment_method"] if "payment_method" in row else None
-        oc_oid = row["opencart_order_id"] if "opencart_order_id" in row else None
+        # sqlite3.Row ведёт себя как последовательность; для безопасного доступа по
+        # именам колонок приводим строку к словарю.
+        row_dict = dict(row)
+        delivery_city = row_dict.get("delivery_city")
+        delivery_cost = row_dict.get("delivery_cost")
+        desired_dt = row_dict.get("desired_delivery_datetime")
+        pm = row_dict.get("payment_method")
+        oc_oid = row_dict.get("opencart_order_id")
         opencart_order_id = int(oc_oid) if oc_oid is not None else None
-        order_email = row["email"] if "email" in row else None
+        order_email = row_dict.get("email")
         return Order(
-            id=int(row["id"]),
-            user_id=int(row["user_id"]),
-            status=OrderStatus(row["status"]),
-            total_amount=int(row["total_amount"]),
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-            delivery_address=str(row["delivery_address"]),
-            customer_name=str(row["customer_name"]),
-            phone=str(row["phone"]),
+            id=int(row_dict["id"]),
+            user_id=int(row_dict["user_id"]),
+            status=OrderStatus(row_dict["status"]),
+            total_amount=int(row_dict["total_amount"]),
+            created_at=datetime.fromisoformat(row_dict["created_at"]),
+            updated_at=datetime.fromisoformat(row_dict["updated_at"]),
+            delivery_address=str(row_dict["delivery_address"]),
+            customer_name=str(row_dict["customer_name"]),
+            phone=str(row_dict["phone"]),
             email=str(order_email) if order_email else None,
             comment=row["comment"],
             external_payment_id=row["external_payment_id"],
