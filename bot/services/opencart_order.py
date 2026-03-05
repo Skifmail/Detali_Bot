@@ -56,7 +56,6 @@ async def add_payment_confirmation_to_opencart(
 
 
 DEFAULT_CUSTOMER_FIRST_NAME = "Клиент"
-FALLBACK_EMAIL_DOMAIN = "example.com"
 
 
 def _split_name(full_name: str) -> tuple[str, str]:
@@ -117,9 +116,9 @@ async def create_order_in_opencart(order: Order) -> int | None:
     if len(address_1) < 3:
         address_1 = "Адрес не указан"
     postcode = ""  # В заказе бота индекса нет; не подставляем 000000, чтобы не было «Коломна 00000»
+    # OpenCart требует email клиента. Используем только тот, который указал пользователь в боте.
+    # Если email пустой, оставляем его пустым — поведение будет таким же, как при заказе без email на сайте.
     email = (order.email or "").strip()
-    if not email:
-        email = f"bot-order-{order.id}@{FALLBACK_EMAIL_DOMAIN}"
 
     async with OpenCartClient(config) as client:
         try:
