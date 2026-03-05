@@ -1300,7 +1300,7 @@ class Database:
             limit (int): Максимальное количество заказов.
 
         Returns:
-            List[OrderSummary]: Список кратких представлений заказов.
+            list[OrderSummary]: Список кратких представлений заказов.
         """
 
         with self._connection() as conn:
@@ -1318,6 +1318,153 @@ class Database:
                 LIMIT ?;
                 """,
                 (limit,),
+            )
+            rows = cursor.fetchall()
+
+        summaries: list[OrderSummary] = []
+        for row in rows:
+            summaries.append(
+                OrderSummary(
+                    id=int(row["id"]),
+                    display_order_number=int(row["display_order_number"]),
+                    status=OrderStatus(row["status"]),
+                    total_amount=int(row["total_amount"]),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                ),
+            )
+        return summaries
+
+    def list_orders_by_statuses(
+        self,
+        statuses: Iterable[OrderStatus],
+        limit: int = RECENT_ORDERS_LIMIT,
+    ) -> list[OrderSummary]:
+        """Возвращает список заказов по набору статусов для админ-панели.
+
+        Args:
+            statuses: Итерация статусов заказов, которые нужно выбрать.
+            limit: Максимальное количество заказов.
+
+        Returns:
+            list[OrderSummary]: Список кратких представлений заказов.
+        """
+
+        statuses_list = list(statuses)
+        if not statuses_list:
+            return []
+
+        placeholders = ",".join("?" for _ in statuses_list)
+        query = f"""
+                SELECT
+                    id,
+                    display_order_number,
+                    status,
+                    total_amount,
+                    created_at
+                FROM orders
+                WHERE status IN ({placeholders})
+                ORDER BY created_at DESC
+                LIMIT ?;
+                """
+        params: list[object] = [s.value for s in statuses_list]
+        params.append(limit)
+
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+        summaries: list[OrderSummary] = []
+        for row in rows:
+            summaries.append(
+                OrderSummary(
+                    id=int(row["id"]),
+                    display_order_number=int(row["display_order_number"]),
+                    status=OrderStatus(row["status"]),
+                    total_amount=int(row["total_amount"]),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                ),
+            )
+        return summaries
+
+    def find_orders_by_display_number(
+        self,
+        display_order_number: int,
+        limit: int = RECENT_ORDERS_LIMIT,
+    ) -> list[OrderSummary]:
+        """Ищет заказы по отображаемому номеру (4‑значный номер на чеке).
+
+        Args:
+            display_order_number: Отображаемый номер заказа (display_order_number).
+            limit: Максимальное количество заказов.
+
+        Returns:
+            list[OrderSummary]: Список найденных заказов (возможны несколько при коллизиях номера).
+        """
+
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    display_order_number,
+                    status,
+                    total_amount,
+                    created_at
+                FROM orders
+                WHERE display_order_number = ?
+                ORDER BY created_at DESC
+                LIMIT ?;
+                """,
+                (display_order_number, limit),
+            )
+            rows = cursor.fetchall()
+
+        summaries: list[OrderSummary] = []
+        for row in rows:
+            summaries.append(
+                OrderSummary(
+                    id=int(row["id"]),
+                    display_order_number=int(row["display_order_number"]),
+                    status=OrderStatus(row["status"]),
+                    total_amount=int(row["total_amount"]),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                ),
+            )
+        return summaries
+
+    def find_orders_by_phone(
+        self,
+        phone: str,
+        limit: int = RECENT_ORDERS_LIMIT,
+    ) -> list[OrderSummary]:
+        """Ищет заказы по номеру телефона получателя.
+
+        Args:
+            phone: Нормализованный телефон (как сохраняется в orders.phone).
+            limit: Максимальное количество заказов.
+
+        Returns:
+            list[OrderSummary]: Список заказов для заданного телефона.
+        """
+
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    display_order_number,
+                    status,
+                    total_amount,
+                    created_at
+                FROM orders
+                WHERE phone = ?
+                ORDER BY created_at DESC
+                LIMIT ?;
+                """,
+                (phone, limit),
             )
             rows = cursor.fetchall()
 

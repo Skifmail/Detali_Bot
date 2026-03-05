@@ -700,14 +700,41 @@ def build_admin_orders_keyboard(
 ) -> InlineKeyboardMarkup:
     """Создаёт клавиатуру списка заказов в админ-панели.
 
+    Включает:
+    - кнопку поиска заказа;
+    - фильтры по статусу («Новые», «В доставке», «Оплаченные»);
+    - список последних заказов;
+    - кнопку «Назад».
+
     Args:
         orders (Iterable[OrderSummary]): Коллекция заказов.
 
     Returns:
-        InlineKeyboardMarkup: Инлайн-клавиатура с выбором заказа.
+        InlineKeyboardMarkup: Инлайн-клавиатура с выбором заказа и дополнительными действиями.
     """
 
     builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="🔍 Найти заказ",
+            callback_data="admin:orders_search",
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="Новые",
+            callback_data="admin:orders_filter:new",
+        ),
+        InlineKeyboardButton(
+            text="В доставке",
+            callback_data="admin:orders_filter:delivery",
+        ),
+        InlineKeyboardButton(
+            text="Оплаченные",
+            callback_data="admin:orders_filter:paid",
+        ),
+    )
+
     for order in orders:
         dt_str = order.created_at.strftime("%d.%m.%y %H:%M")
         builder.button(

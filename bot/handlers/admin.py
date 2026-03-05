@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
@@ -32,7 +33,7 @@ from ..keyboards.kb import (
     build_main_menu_keyboard,
 )
 from ..services.catalog_sync import sync_catalog_from_opencart
-from ..utils import get_db_from_callback, get_db_from_message, is_admin
+from ..utils import get_db_from_callback, get_db_from_message, is_admin, normalize_phone
 
 TEXTS: dict[str, str] = {
     "not_admin": "⛔ У вас нет доступа к админ-панели.",
@@ -86,6 +87,12 @@ TEXTS: dict[str, str] = {
     "users_line": "• id={id} tg={tg_id} | {name} | тел. {phone}",
     "users_empty": "👥 Пользователей пока нет.",
     "users_more": "\n\n… показаны последние {limit} из {total}.",
+    "orders_search_prompt": "🔍 Введите номер заказа (4 цифры) или телефон (формат +7XXXXXXXXXX или 8XXXXXXXXXX):",
+    "orders_search_not_found": "По запросу <code>{query}</code> заказы не найдены.",
+    "orders_search_results": "📦 Найденные заказы по запросу: <code>{query}</code>",
+    "orders_filter_new": "📦 Заказы — Новые:",
+    "orders_filter_delivery": "📦 Заказы — В доставке:",
+    "orders_filter_paid": "📦 Заказы — Оплаченные:",
 }
 
 router = Router(name="admin")
@@ -118,6 +125,12 @@ class BroadcastForm(StatesGroup):
     """Состояния FSM для создания рассылки админом."""
 
     content = State()
+
+
+class AdminOrderSearchForm(StatesGroup):
+    """Состояния FSM для поиска заказа администратором."""
+
+    query = State()
 
 
 def _build_broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -265,14 +278,11 @@ async def handle_admin_orders_message(message: Message) -> None:
         return
     db = get_db_from_message(message)
     orders = db.list_recent_orders()
+    text = TEXTS["orders_header"]
     if not orders:
-        await message.answer(
-            TEXTS["orders_header"],
-            reply_markup=build_admin_orders_keyboard(orders=[]),
-        )
-        return
+        text += "\n\nПока нет заказов."
     await message.answer(
-        TEXTS["orders_header"],
+        text,
         reply_markup=build_admin_orders_keyboard(orders=orders),
     )
 
@@ -511,26 +521,143 @@ async def handle_admin_orders_callback(callback: CallbackQuery) -> None:
 
     db = get_db_from_callback(callback)
     orders = db.list_recent_orders()
+    text = TEXTS["orders_header"]
     if not orders:
-        try:
-            await callback.message.edit_text(
-                text="Пока нет заказов.",
-                reply_markup=build_admin_orders_keyboard(orders=[]),
-            )
-        except TelegramBadRequest as err:
-            logger.debug("Не удалось отредактировать список заказов: {err}", err=err)
-            await callback.message.edit_text("Пока нет заказов.")
-        return
+        text += "\n\nПока нет заказов."
 
     try:
         await callback.message.edit_text(
-            text=TEXTS["orders_header"],
+            text=text,
             reply_markup=build_admin_orders_keyboard(orders=orders),
         )
     except TelegramBadRequest as err:
         if "message is not modified" not in str(err).lower():
             logger.debug("Ошибка при обновлении списка заказов: {err}", err=err)
             raise
+
+
+@router.callback_query(F.data == "admin:orders_search")
+async def handle_admin_orders_search_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Запрашивает у администратора критерий поиска заказа (номер или телефон)."""
+
+    await callback.answer()
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+
+    await state.set_state(AdminOrderSearchForm.query)
+    try:
+        await callback.message.edit_text(
+            text=TEXTS["orders_search_prompt"],
+            reply_markup=None,
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(TEXTS["orders_search_prompt"])
+
+
+@router.message(AdminOrderSearchForm.query)
+async def handle_admin_orders_search_query(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    """Обрабатывает ввод строки поиска заказа (номер или телефон) админом."""
+
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+        await state.clear()
+        return
+
+    raw_query = (message.text or "").strip()
+    if not raw_query:
+        await message.answer(TEXTS["orders_search_prompt"])
+        return
+
+    db = get_db_from_message(message)
+
+    # Пытаемся определить, ищет ли админ по телефону или по номеру заказа.
+    digits_only = re.sub(r"\D", "", raw_query)
+
+    # Телефон: 10+ цифр после нормализации.
+    phone_normalized = normalize_phone(raw_query)
+    if phone_normalized is not None and len(digits_only) >= 10:
+        summaries = db.find_orders_by_phone(phone=phone_normalized)
+    else:
+        # Номер заказа: 3–6 цифр (отображаемый 4‑значный номер).
+        if not digits_only or not (3 <= len(digits_only) <= 6):
+            await message.answer(TEXTS["orders_search_prompt"])
+            return
+        try:
+            display_number = int(digits_only)
+        except ValueError:
+            await message.answer(TEXTS["orders_search_prompt"])
+            return
+        summaries = db.find_orders_by_display_number(display_order_number=display_number)
+
+    await state.clear()
+
+    if not summaries:
+        await message.answer(
+            TEXTS["orders_search_not_found"].format(query=raw_query),
+            parse_mode="HTML",
+        )
+        return
+
+    await message.answer(
+        TEXTS["orders_search_results"].format(query=raw_query),
+        reply_markup=build_admin_orders_keyboard(orders=summaries),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("admin:orders_filter:"))
+async def handle_admin_orders_filter(callback: CallbackQuery) -> None:
+    """Фильтрует список заказов в админке по статусу."""
+
+    await callback.answer()
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+
+    _, _, filter_key = callback.data.split(":", maxsplit=2)
+
+    db = get_db_from_callback(callback)
+    if filter_key == "new":
+        statuses = [
+            OrderStatus.NEW,
+            OrderStatus.AWAITING_PAYMENT,
+            OrderStatus.PROCESSING,
+            OrderStatus.ASSEMBLING,
+        ]
+        header = TEXTS["orders_filter_new"]
+    elif filter_key == "delivery":
+        statuses = [OrderStatus.COURIER]
+        header = TEXTS["orders_filter_delivery"]
+    elif filter_key == "paid":
+        statuses = [
+            OrderStatus.PAID,
+            OrderStatus.DELIVERED,
+        ]
+        header = TEXTS["orders_filter_paid"]
+    else:
+        statuses = []
+        header = TEXTS["orders_header"]
+
+    summaries = db.list_orders_by_statuses(statuses=statuses) if statuses else db.list_recent_orders()
+    text = header
+    if not summaries:
+        text += "\n\nПока нет заказов с таким статусом."
+
+    try:
+        await callback.message.edit_text(
+            text=text,
+            reply_markup=build_admin_orders_keyboard(orders=summaries),
+        )
+    except TelegramBadRequest as err:
+        logger.debug("Ошибка при обновлении списка заказов по фильтру: {err}", err=err)
 
 
 @router.callback_query(F.data.startswith("admin:order:cancel:"))
@@ -997,6 +1124,10 @@ async def notify_admins_new_order(bot: Bot, order: Order) -> None:
     db: Database | None = getattr(bot, "db", None)
     full_text = TEXTS["new_order_title"] + _format_order_details(order)
     base_photo = _first_order_photo_url(order)
+    keyboard = build_admin_order_details_keyboard(
+        order_id=order.id,
+        current_status=order.status,
+    )
 
     for admin_tg_id in admin_ids:
         try:
@@ -1008,6 +1139,7 @@ async def notify_admins_new_order(bot: Bot, order: Order) -> None:
                         chat_id=admin_tg_id,
                         photo=base_photo,
                         caption=full_text,
+                        reply_markup=keyboard,
                     )
                     has_photo = True
                 except TelegramBadRequest as err:
@@ -1018,7 +1150,11 @@ async def notify_admins_new_order(bot: Bot, order: Order) -> None:
                         err=err,
                     )
             if sent is None:
-                sent = await bot.send_message(chat_id=admin_tg_id, text=full_text)
+                sent = await bot.send_message(
+                    chat_id=admin_tg_id,
+                    text=full_text,
+                    reply_markup=keyboard,
+                )
             if db is not None and sent is not None:
                 db.save_admin_order_notification(
                     order_id=order.id,
