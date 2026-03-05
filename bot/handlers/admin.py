@@ -100,6 +100,29 @@ TEXTS: dict[str, str] = {
     "export_orders_prompt": "📥 Выберите период для выгрузки заказов в CSV:",
     "export_orders_empty": "В выбранном периоде заказов нет.",
     "export_orders_done": "✅ Файл с заказами отправлен ({count} заказов).",
+    "order_message_prompt": "✉️ Введите сообщение для клиента (по заказу #{display_number}):",
+    "order_message_sent": "✅ Сообщение отправлено клиенту.",
+    "order_message_no_user": "Не удалось отправить: клиент не найден (нет Telegram).",
+    "contact_edit_prompt": (
+        "📞 До 5 контактов для связи с клиентами. "
+        "Отправьте контакт (добавить), «удалить N», «очистить» или «готово»."
+    ),
+    "contact_edit_list": "Текущие контакты ({count}/5):\n{list}",
+    "contact_edit_empty": "Нет контактов.",
+    "contact_edit_added": "✅ Контакт добавлен.",
+    "contact_edit_removed": "✅ Контакт удалён.",
+    "contact_edit_cleared": "✅ Все контакты очищены.",
+    "contact_edit_done": "✅ Готово.",
+    "contact_edit_cancelled": "Отменено.",
+    "contact_edit_full": "Достигнут лимит (5 контактов). Удалите один: «удалить N».",
+    "contact_edit_bad_delete": "Укажите номер контакта от 1 до {max}: «удалить 1».",
+    "client_message_header": (
+        "📦 Сообщение по заказу #{display_number}\n\n{admin_message}\n\n" "📞 Связаться с нами:\n{admin_contacts}"
+    ),
+    "client_message_no_contact": (
+        "📦 Сообщение по заказу #{display_number}\n\n{admin_message}\n\n"
+        "📞 Контакт для связи не указан. Уточните у магазина, как с ними связаться."
+    ),
 }
 
 router = Router(name="admin")
@@ -138,6 +161,18 @@ class AdminOrderSearchForm(StatesGroup):
     """Состояния FSM для поиска заказа администратором."""
 
     query = State()
+
+
+class AdminOrderMessageForm(StatesGroup):
+    """Состояния FSM для отправки сообщения клиенту по заказу."""
+
+    message = State()
+
+
+class AdminContactForm(StatesGroup):
+    """Состояния FSM для изменения контакта админа для связи с клиентами."""
+
+    contact = State()
 
 
 @router.message(F.text == KB_TEXTS["admin_orders_search"])
@@ -445,6 +480,187 @@ async def handle_admin_export_orders_period(callback: CallbackQuery) -> None:
     doc = BufferedInputFile(csv_bytes, filename=filename)
     await callback.message.answer_document(document=doc)
     await callback.message.answer(TEXTS["export_orders_done"].format(count=len(orders)))
+
+
+@router.callback_query(F.data.startswith("admin:order_message:"))
+async def handle_admin_order_message_start(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Запускает сценарий отправки сообщения клиенту по заказу."""
+    await callback.answer()
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+    prefix = "admin:order_message:"
+    raw = callback.data or ""
+    if not raw.startswith(prefix):
+        return
+    try:
+        order_id = int(raw[len(prefix) :].strip())
+    except ValueError:
+        return
+    db = get_db_from_callback(callback)
+    order = db.get_order(order_id=order_id)
+    if order is None:
+        await callback.message.answer("Заказ не найден.")
+        return
+    await state.set_state(AdminOrderMessageForm.message)
+    await state.update_data(admin_order_message_order_id=order_id)
+    await callback.message.answer(
+        TEXTS["order_message_prompt"].format(display_number=order.display_order_number),
+    )
+
+
+@router.message(AdminOrderMessageForm.message)
+async def handle_admin_order_message_text(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    """Отправляет введённое сообщение клиенту по заказу с инфой о заказе и контактом админа."""
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer(TEXTS["order_message_prompt"].format(display_number="…"))
+        return
+    data = await state.get_data()
+    order_id = data.get("admin_order_message_order_id")
+    await state.clear()
+    if order_id is None:
+        await message.answer("Сессия сброшена. Выберите заказ и нажмите «Написать клиенту» снова.")
+        return
+    db = get_db_from_message(message)
+    order = db.get_order(order_id=order_id)
+    if order is None:
+        await message.answer("Заказ не найден.")
+        return
+    user_tg_id = db.get_user_tg_id(user_id=order.user_id)
+    if user_tg_id is None:
+        await message.answer(TEXTS["order_message_no_user"])
+        return
+    admin_contacts = db.get_admin_contacts()
+    if admin_contacts:
+        contacts_block = "\n".join(admin_contacts)
+        body = TEXTS["client_message_header"].format(
+            display_number=order.display_order_number,
+            admin_message=text,
+            admin_contacts=contacts_block,
+        )
+    else:
+        body = TEXTS["client_message_no_contact"].format(
+            display_number=order.display_order_number,
+            admin_message=text,
+        )
+    try:
+        await message.bot.send_message(chat_id=user_tg_id, text=body)
+    except Exception as e:
+        logger.warning(
+            "Не удалось отправить сообщение клиенту tg_id={tg_id}: {err}",
+            tg_id=user_tg_id,
+            err=e,
+        )
+        await message.answer("Не удалось доставить сообщение клиенту.")
+        return
+    await message.answer(TEXTS["order_message_sent"])
+
+
+def _format_admin_contacts_list(contacts: list[str]) -> str:
+    """Форматирует нумерованный список контактов для сообщения админу."""
+    if not contacts:
+        return TEXTS["contact_edit_empty"]
+    lines = [f"{i}. {c}" for i, c in enumerate(contacts, 1)]
+    return TEXTS["contact_edit_list"].format(
+        count=len(contacts),
+        list="\n".join(lines),
+    )
+
+
+@router.callback_query(F.data == "admin:contact_edit")
+async def handle_admin_contact_edit_start(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Запрашивает у админа контакты для связи с клиентами (до 5)."""
+    await callback.answer()
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+    db = get_db_from_callback(callback)
+    contacts = db.get_admin_contacts()
+    await state.set_state(AdminContactForm.contact)
+    await callback.message.answer(_format_admin_contacts_list(contacts))
+    await callback.message.answer(TEXTS["contact_edit_prompt"])
+
+
+@router.message(AdminContactForm.contact)
+async def handle_admin_contact_edit_text(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    """Обрабатывает ввод: добавление контакта, удаление по номеру, очистка или выход."""
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+        await state.clear()
+        return
+    raw = (message.text or "").strip()
+    db = get_db_from_message(message)
+    contacts = db.get_admin_contacts()
+
+    if raw.lower() in ("готово", "отмена"):
+        await state.clear()
+        await message.answer(
+            TEXTS["contact_edit_done"] if raw.lower() == "готово" else TEXTS["contact_edit_cancelled"],
+        )
+        return
+
+    if raw.lower() == "очистить":
+        db.set_admin_contacts([])
+        await state.clear()
+        await message.answer(TEXTS["contact_edit_cleared"])
+        return
+
+    delete_prefix = "удалить "
+    if raw.lower().startswith(delete_prefix):
+        if not contacts:
+            await message.answer(TEXTS["contact_edit_empty"])
+            await message.answer(TEXTS["contact_edit_prompt"])
+            return
+        num_str = raw[len(delete_prefix) :].strip()
+        try:
+            idx = int(num_str)
+        except ValueError:
+            idx = 0
+        if 1 <= idx <= len(contacts):
+            contacts.pop(idx - 1)
+            db.set_admin_contacts(contacts)
+            await message.answer(TEXTS["contact_edit_removed"])
+            await message.answer(_format_admin_contacts_list(db.get_admin_contacts()))
+            await message.answer(TEXTS["contact_edit_prompt"])
+        else:
+            await message.answer(
+                TEXTS["contact_edit_bad_delete"].format(max=len(contacts) or 1),
+            )
+            await message.answer(TEXTS["contact_edit_prompt"])
+        return
+
+    if not raw:
+        await message.answer(_format_admin_contacts_list(contacts))
+        await message.answer(TEXTS["contact_edit_prompt"])
+        return
+
+    if len(contacts) >= Database.ADMIN_CONTACTS_MAX:
+        await message.answer(TEXTS["contact_edit_full"])
+        await message.answer(TEXTS["contact_edit_prompt"])
+        return
+
+    contacts.append(raw)
+    db.set_admin_contacts(contacts)
+    await message.answer(TEXTS["contact_edit_added"])
+    await message.answer(_format_admin_contacts_list(db.get_admin_contacts()))
+    await message.answer(TEXTS["contact_edit_prompt"])
 
 
 def _format_users_message(users: list[User], total: int, limit: int) -> str:

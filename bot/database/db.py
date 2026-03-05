@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import random
 import sqlite3
@@ -205,6 +206,20 @@ class Database:
         self._migrate_products_opencart_id()
         self._migrate_categories_opencart_id()
         self._migrate_admin_order_notifications()
+        self._migrate_bot_settings()
+
+    def _migrate_bot_settings(self) -> None:
+        """Создаёт таблицу настроек бота (ключ-значение), в т.ч. контакт админа для клиентов."""
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT ''
+                );
+                """,
+            )
 
     def _migrate_products_opencart_id(self) -> None:
         """Добавляет колонку opencart_product_id в таблицу products при её отсутствии.
@@ -309,6 +324,68 @@ class Database:
             )
             rows = cursor.fetchall()
         return [(int(r["chat_id"]), int(r["message_id"]), bool(r["has_photo"])) for r in rows]
+
+    ADMIN_CONTACT_KEY = "admin_contact"
+    ADMIN_CONTACTS_KEY = "admin_contacts"
+    ADMIN_CONTACTS_MAX = 5
+
+    def get_setting(self, key: str) -> str | None:
+        """Возвращает значение настройки по ключу.
+
+        Args:
+            key: Ключ настройки.
+
+        Returns:
+            Значение или None, если ключ отсутствует.
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT value FROM bot_settings WHERE key = ?;",
+                (key,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return str(row["value"])
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Сохраняет значение настройки.
+
+        Args:
+            key: Ключ настройки.
+            value: Строковое значение.
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?);",
+                (key, value),
+            )
+
+    def get_admin_contacts(self) -> list[str]:
+        """Возвращает список контактов админов для связи с клиентами (до 5).
+
+        Если задан старый ключ admin_contact — возвращает его как один элемент.
+        """
+        raw = self.get_setting(self.ADMIN_CONTACTS_KEY)
+        if raw is not None and raw.strip():
+            try:
+                lst = json.loads(raw)
+                if isinstance(lst, list):
+                    return [str(x).strip() for x in lst if str(x).strip()][: self.ADMIN_CONTACTS_MAX]
+            except (json.JSONDecodeError, TypeError):
+                pass
+        legacy = self.get_setting(self.ADMIN_CONTACT_KEY)
+        if legacy and legacy.strip():
+            return [legacy.strip()]
+        return []
+
+    def set_admin_contacts(self, contacts: list[str]) -> None:
+        """Сохраняет список контактов админов (до 5). Очищает старый admin_contact."""
+        trimmed = [str(c).strip() for c in contacts if str(c).strip()][: self.ADMIN_CONTACTS_MAX]
+        self.set_setting(self.ADMIN_CONTACTS_KEY, json.dumps(trimmed, ensure_ascii=False))
+        self.set_setting(self.ADMIN_CONTACT_KEY, "")
 
     def _seed_if_empty(self) -> None:
         """Заполняет БД тестовыми данными, если она пуста.

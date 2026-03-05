@@ -738,6 +738,12 @@ def build_admin_more_keyboard() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(
+            text="📞 Контакт для связи с клиентами",
+            callback_data="admin:contact_edit",
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(
             text=TEXTS["back"],
             callback_data="nav:back_main",
         ),
@@ -824,6 +830,12 @@ def build_admin_order_details_keyboard(
         InlineKeyboardButton(
             text="🔄 Сменить статус",
             callback_data=f"admin:status:{order_id}",
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="✉️ Написать клиенту",
+            callback_data=f"admin:order_message:{order_id}",
         ),
     )
     if current_status is not None and current_status != OrderStatus.CANCELLED:
