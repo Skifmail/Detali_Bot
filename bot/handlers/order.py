@@ -1555,21 +1555,20 @@ async def handle_order_confirm(
         return
 
     db = get_db_from_callback(callback)
-    if not email or not str(email).strip():
-        # Подстраховка: если email по какой-то причине не в state — берём последний использованный пользователем.
-        suggested = db.get_emails_used_by_user(user_db_id)
-        if suggested:
-            email = suggested[0]
-            logger.debug(
-                "Оформление заказа: email взят из истории пользователя (в state не было), user_db_id={}",
-                user_db_id,
-            )
-        else:
-            email = None
-    elif not isinstance(email, str):
-        email = None
-    else:
-        email = str(email).strip() or None
+    if not email or not str(email).strip() or not isinstance(email, str):
+        # Если email по какой-то причине не в state или некорректного типа — это ошибка логики.
+        logger.error(
+            "Оформление заказа: email отсутствует в состоянии перед подтверждением, "
+            "user_db_id={user_id}, data_keys={keys}",
+            user_id=user_db_id,
+            keys=sorted(data.keys()),
+        )
+        await callback.message.answer(
+            "Не удалось зафиксировать email для заказа. Попробуйте оформить заказ заново.",
+        )
+        await state.clear()
+        return
+    email = str(email).strip()
 
     order = db.create_order_from_cart(
         user_id=user_db_id,

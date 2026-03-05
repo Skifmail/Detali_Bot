@@ -116,9 +116,20 @@ async def create_order_in_opencart(order: Order) -> int | None:
     if len(address_1) < 3:
         address_1 = "Адрес не указан"
     postcode = ""  # В заказе бота индекса нет; не подставляем 000000, чтобы не было «Коломна 00000»
-    # OpenCart требует email клиента. Используем только тот, который указал пользователь в боте.
-    # Если email пустой, оставляем его пустым — поведение будет таким же, как при заказе без email на сайте.
+    # OpenCart требует email клиента. Используем строго email из заказа бота.
+    # Если он пустой, заказ в OpenCart не создаём и логируем проблему — это баг в цепочке сбора данных.
     email = (order.email or "").strip()
+    logger.info(
+        "Создание заказа в OpenCart: bot_order_id={order_id}, email_for_oc={email!r}",
+        order_id=order.id,
+        email=email,
+    )
+    if not email:
+        logger.error(
+            "Заказ id={} не передан в OpenCart: email пустой, хотя должен быть обязательным.",
+            order.id,
+        )
+        return None
 
     async with OpenCartClient(config) as client:
         try:
