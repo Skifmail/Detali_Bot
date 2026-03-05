@@ -592,40 +592,18 @@ async def handle_recipient_self(
         full_name_parts = [p for p in [current_user.first_name, current_user.last_name] if p]
         full_name = " ".join(full_name_parts)
         await state.update_data(name=full_name, phone=current_user.phone or "")
-        data = await state.get_data()
-        suggested_address = data.get("suggested_address") or data.get("last_address")
-        delivery_city = data.get("delivery_city") or ""
-        if suggested_address:
-            city_display = delivery_city or "Город не выбран"
-            text = TEXTS["confirm_address"].format(city=city_display, address=suggested_address)
-            builder = InlineKeyboardBuilder()
-            builder.button(
-                text="✅ Оставить этот адрес",
-                callback_data="order:addr_use_saved",
+        options_for_kb = _build_delivery_options_for_kb()
+        try:
+            await callback.message.edit_text(
+                TEXTS["ask_delivery_choice"],
+                reply_markup=build_delivery_choice_keyboard(options_for_kb),
             )
-            builder.button(
-                text="✏️ Ввести другой адрес",
-                callback_data="order:addr_change",
+        except TelegramBadRequest:
+            await callback.message.answer(
+                TEXTS["ask_delivery_choice"],
+                reply_markup=build_delivery_choice_keyboard(options_for_kb),
             )
-            builder.button(
-                text="🚚 Изменить город доставки",
-                callback_data="order:addr_change_city",
-            )
-            builder.adjust(1)
-            try:
-                await callback.message.edit_text(text, reply_markup=builder.as_markup())
-            except TelegramBadRequest:
-                await callback.message.answer(text, reply_markup=builder.as_markup())
-            await state.set_state(OrderForm.address_confirm)
-        else:
-            try:
-                await callback.message.edit_text(TEXTS["ask_address"], reply_markup=None)
-            except TelegramBadRequest:
-                await callback.message.answer(
-                    TEXTS["ask_address"],
-                    reply_markup=ReplyKeyboardRemove(),
-                )
-            await state.set_state(OrderForm.address)
+        await state.set_state(OrderForm.delivery_choice)
         return
 
     try:

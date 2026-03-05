@@ -10,6 +10,9 @@ from ..database.models import Order, OrderStatus
 from ..keyboards.kb import build_payment_keyboard, build_payment_method_keyboard
 from ..utils import get_db_from_callback, get_db_from_message
 
+# Адрес самовывоза для сообщения клиенту после оплаты
+PICKUP_ADDRESS_DISPLAY = "ул. Октябрьской революции, 215, г. Коломна"
+
 TEXTS: dict[str, str] = {
     "payment_choice": "💳 Выберите способ оплаты заказа #{display_number} ({total} ₽):",
     "payment_intro": "💳 Оплата заказа #{display_number}\n\n"
@@ -20,6 +23,7 @@ TEXTS: dict[str, str] = {
     "Номер заказа: <b>#{display_number}</b>\n"
     "Сумма: <b>{total} ₽</b>\n"
     "Статус: ✅ Оплачен (для демо).",
+    "success_pickup": "\n\n📍 Забрать заказ можно по адресу:\n{address}",
     "cash_success": (
         "✅ Заказ принят.\n\n"
         "Номер заказа: <b>#{display_number}</b>\n"
@@ -183,6 +187,8 @@ async def handle_payment_method_cash(callback: CallbackQuery) -> None:
         display_number=updated.display_order_number,
         total=updated.total_amount,
     )
+    if updated.delivery_address == "Самовывоз":
+        text += TEXTS["success_pickup"].format(address=PICKUP_ADDRESS_DISPLAY)
     await callback.message.answer(text, parse_mode="HTML")
 
 
@@ -239,4 +245,6 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
         display_number=updated.display_order_number,
         total=updated.total_amount,
     )
-    await callback.message.answer(success_text)
+    if updated.delivery_address == "Самовывоз":
+        success_text += TEXTS["success_pickup"].format(address=PICKUP_ADDRESS_DISPLAY)
+    await callback.message.answer(success_text, parse_mode="HTML")

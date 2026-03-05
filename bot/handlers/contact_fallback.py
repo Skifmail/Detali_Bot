@@ -8,8 +8,8 @@ from aiogram.types import Message
 from ..utils import is_admin
 
 TEXTS: dict[str, str] = {
-    "contact_prompt": ("Чтобы связаться с магазином, напишите по этим контактам:\n\n{contacts}"),
-    "no_contacts": ("Контакт для связи не указан. Уточните у магазина, как с ними связаться."),
+    "contact_prompt": ("Чтобы связаться с нами, напишите или позвоните по этим контактам:\n\n{contacts}"),
+    "no_contacts": ("Позвоните нам по телефону +7 (916) 005-06-08 или +7 (916) 876-30-45."),
 }
 
 router = Router(name="contact_fallback")
