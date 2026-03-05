@@ -522,9 +522,12 @@ async def handle_admin_order_message_start(
         await callback.message.answer("Заказ не найден.")
         return
     await state.set_state(AdminOrderMessageForm.message)
-    await state.update_data(admin_order_message_order_id=order_id)
-    await callback.message.answer(
+    prompt_msg = await callback.message.answer(
         TEXTS["order_message_prompt"].format(display_number=order.display_order_number),
+    )
+    await state.update_data(
+        admin_order_message_order_id=order_id,
+        admin_order_message_prompt_message_id=prompt_msg.message_id,
     )
 
 
@@ -579,7 +582,21 @@ async def handle_admin_order_message_text(
         )
         await message.answer("Не удалось доставить сообщение клиенту.")
         return
-    await message.answer(TEXTS["order_message_sent"])
+
+    confirm_msg = await message.answer(TEXTS["order_message_sent"])
+    prompt_message_id = data.get("admin_order_message_prompt_message_id")
+    chat_id = message.chat.id
+    for mid in (prompt_message_id, message.message_id, confirm_msg.message_id):
+        if mid is None:
+            continue
+        try:
+            await message.bot.delete_message(chat_id=chat_id, message_id=mid)
+        except TelegramBadRequest as e:
+            logger.debug(
+                "Не удалось удалить сообщение в чате админа (message_id={mid}): {err}",
+                mid=mid,
+                err=e,
+            )
 
 
 def _format_admin_contacts_list(contacts: list[str]) -> str:

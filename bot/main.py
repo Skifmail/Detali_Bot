@@ -13,7 +13,7 @@ from loguru import logger
 
 from .core.logging import setup_logging
 from .database.db import create_default_database
-from .handlers import account, admin, cart, catalog, order, payment, start
+from .handlers import account, admin, cart, catalog, contact_fallback, order, payment, start
 from .middlewares.user import UserMiddleware
 from .services.catalog_sync import sync_catalog_from_opencart
 
@@ -113,6 +113,7 @@ async def main() -> None:
     dp.include_router(payment.router)
     dp.include_router(account.router)
     dp.include_router(admin.router)
+    dp.include_router(contact_fallback.router)
 
     await _set_bot_commands(bot)
     logger.info("Запуск бота floraldetails demo")

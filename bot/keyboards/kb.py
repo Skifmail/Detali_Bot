@@ -93,10 +93,14 @@ def build_admin_more_reply_keyboard() -> ReplyKeyboardMarkup:
             Контакт для клиентов, Назад.
     """
     builder = ReplyKeyboardBuilder()
-    builder.row(KeyboardButton(text=TEXTS["menu_sync_catalog"]))
-    builder.row(KeyboardButton(text=TEXTS["menu_users"]))
-    builder.row(KeyboardButton(text=TEXTS["menu_admin_contact"]))
-    builder.row(KeyboardButton(text=TEXTS["back"]))
+    builder.row(
+        KeyboardButton(text=TEXTS["menu_sync_catalog"]),
+        KeyboardButton(text=TEXTS["menu_users"]),
+    )
+    builder.row(
+        KeyboardButton(text=TEXTS["menu_admin_contact"]),
+        KeyboardButton(text=TEXTS["back"]),
+    )
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -116,8 +120,10 @@ def build_admin_orders_reply_keyboard() -> ReplyKeyboardMarkup:
         KeyboardButton(text=TEXTS["admin_orders_delivery"]),
         KeyboardButton(text=TEXTS["admin_orders_paid"]),
     )
-    builder.row(KeyboardButton(text=TEXTS["admin_orders_export"]))
-    builder.row(KeyboardButton(text=TEXTS["back"]))
+    builder.row(
+        KeyboardButton(text=TEXTS["admin_orders_export"]),
+        KeyboardButton(text=TEXTS["back"]),
+    )
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -721,10 +727,10 @@ def build_admin_main_keyboard() -> InlineKeyboardMarkup:
 
 
 def build_admin_more_keyboard() -> InlineKeyboardMarkup:
-    """Создаёт инлайн-клавиатуру для кнопки «Ещё» в меню админа.
+    """Создаёт инлайн-клавиатуру для кнопки «Ещё» в меню админа (плитка по 2 кнопки в строку).
 
     Returns:
-        InlineKeyboardMarkup: Кнопки «Обновить каталог», «Пользователи» и «Назад».
+        InlineKeyboardMarkup: Кнопки «Обновить каталог», «Пользователи», контакт, «Назад».
     """
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -732,8 +738,6 @@ def build_admin_more_keyboard() -> InlineKeyboardMarkup:
             text="🔄 Обновить каталог",
             callback_data="admin:sync_catalog",
         ),
-    )
-    builder.row(
         InlineKeyboardButton(
             text="👥 Пользователи",
             callback_data="admin:users",
@@ -744,8 +748,6 @@ def build_admin_more_keyboard() -> InlineKeyboardMarkup:
             text="📞 Контакт для связи с клиентами",
             callback_data="admin:contact_edit",
         ),
-    )
-    builder.row(
         InlineKeyboardButton(
             text=TEXTS["back"],
             callback_data="nav:back_main",
