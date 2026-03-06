@@ -97,6 +97,30 @@ cd bot && python -m bot.main
 
 ---
 
+## 3.1. Очистка тестовых заказов
+
+Чтобы удалить из БД **все заказы** (тестовые и реальные; пользователи и каталог не трогаются):
+
+1. Остановить бота (чтобы БД не была занята):
+   ```bash
+   sudo systemctl stop detali-bot
+   ```
+2. Выполнить скрипт из корня проекта:
+   ```bash
+   cd /root/Detali_Bot
+   uv run python scripts/clear_test_orders.py
+   ```
+3. Запустить бота:
+   ```bash
+   sudo systemctl start detali-bot
+   ```
+
+**Вариант вручную через sqlite3:**  
+`sqlite3 /root/Detali_Bot/bot/database/bot.sqlite3 "DELETE FROM order_items; DELETE FROM admin_order_notifications; DELETE FROM orders;"`  
+(бот перед этим тоже лучше остановить.)
+
+---
+
 ## 4. После деплоя
 
 - Открыть бота в Telegram, отправить `/start`.
