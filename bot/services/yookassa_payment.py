@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from base64 import b64encode
 from dataclasses import dataclass
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -57,7 +56,8 @@ def create_payment(
     Returns:
         YooKassaPaymentResult с payment_id и confirmation_url или None при ошибке.
     """
-    amount_value = f"{order.total_amount:.2f}"
+    # Сумма платежа — строка "XXX.XX" (обязательно два знака после запятой).
+    amount_value = format(float(order.total_amount), ".2f")
     description = f"Заказ #{order.display_order_number}"
 
     payload: dict[str, Any] = {
@@ -73,12 +73,15 @@ def create_payment(
     # Чек 54-ФЗ обязателен. Если у заказа нет email — подставляем RECEIPT_EMAIL_FALLBACK.
     customer_email = (order.email or "").strip() or RECEIPT_EMAIL_FALLBACK
 
+    # ЮKassa требует: receipt.items[].amount — объект {"value": "100.00", "currency": "RUB"},
+    # value обязательно строка с ровно двумя знаками после запятой (не int/float).
+    # Сумма по позициям чека должна равняться сумме платежа.
     receipt_items: list[dict[str, Any]] = []
     for item in order.items:
         title = (item.product.title or "Товар")[:128]
-        # В 54-ФЗ для сторонней кассы amount — сумма по позиции (quantity * unit_price), строка "XXX.XX".
-        line_total = Decimal(str(item.quantity * item.unit_price)).quantize(Decimal("0.01"))
-        value_str = f"{line_total:.2f}"
+        line_total_rub = item.quantity * item.unit_price
+        # value — строка с ровно двумя знаками после запятой (ЮKassa не принимает int/float).
+        value_str = format(round(line_total_rub, 2), ".2f")
         receipt_items.append(
             {
                 "description": title,
@@ -87,6 +90,21 @@ def create_payment(
                 "vat_code": 1,
                 "payment_mode": "full_payment",
                 "payment_subject": "commodity",
+            }
+        )
+    # Если сумма позиций не совпадает с суммой заказа (например, есть доставка), добавляем строку.
+    order_total_rub = order.total_amount
+    items_total_rub = sum(item.quantity * item.unit_price for item in order.items)
+    if items_total_rub < order_total_rub:
+        delta = round(order_total_rub - items_total_rub, 2)
+        receipt_items.append(
+            {
+                "description": "Доставка",
+                "quantity": 1.0,
+                "amount": {"value": format(delta, ".2f"), "currency": "RUB"},
+                "vat_code": 1,
+                "payment_mode": "full_payment",
+                "payment_subject": "service",
             }
         )
     payload["receipt"] = {
