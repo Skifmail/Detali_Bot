@@ -116,12 +116,17 @@ async def _start_yookassa_payment(message: Message, order_id: int) -> None:
     config = get_yookassa_config()
     confirmation_url: str | None = None
     if config:
+        # Возврат после оплаты — в бота с deep link, чтобы показать подтверждение.
+        return_url: str | None = None
+        if config.return_url:
+            base = config.return_url.rstrip("/")
+            return_url = f"{base}?start=pay_{order.id}"
         result = await asyncio.to_thread(
             yookassa_create_payment,
             order,
             shop_id=config.shop_id,
             secret_key=config.secret_key,
-            return_url=config.return_url,
+            return_url=return_url,
         )
         if result:
             db.set_order_external_payment_id(order.id, result.payment_id)
