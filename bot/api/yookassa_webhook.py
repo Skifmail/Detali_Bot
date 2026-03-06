@@ -45,11 +45,18 @@ def create_yookassa_webhook_app(bot: Any, db: Any) -> FastAPI:
             logger.warning("ЮKassa webhook: невалидный JSON: {}", e)
             return Response(status_code=400)
         event = body.get("event")
-        if event != "payment.succeeded":
-            return Response(status_code=200)
         obj = body.get("object") or {}
         payment_id = obj.get("id")
+        # Логируем каждый входящий webhook (и тестовый, и боевой) — чтобы видеть, доходят ли уведомления.
+        logger.info(
+            "ЮKassa webhook: event={}, payment_id={}",
+            event,
+            payment_id,
+        )
+        if event != "payment.succeeded":
+            return Response(status_code=200)
         if not payment_id:
+            logger.warning("ЮKassa webhook: event=payment.succeeded, но нет object.id")
             return Response(status_code=200)
         # Ответить 200 сразу, обработку — в фоне.
         asyncio.create_task(_process_payment_succeeded(app.state.db, app.state.bot, payment_id))
@@ -60,40 +67,45 @@ def create_yookassa_webhook_app(bot: Any, db: Any) -> FastAPI:
 
 async def _process_payment_succeeded(db: Any, bot: Any, payment_id: str) -> None:
     """Обновляет заказ после успешной оплаты, создаёт заказ в OpenCart, уведомляет админа и клиента."""
-    order = db.get_order_by_external_payment_id(payment_id)
-    if order is None:
-        logger.warning("ЮKassa webhook: заказ не найден по payment_id={}", payment_id)
-        return
-    if order.status == OrderStatus.PAID:
-        logger.debug("ЮKassa webhook: заказ order_id={} уже оплачен, пропуск", order.id)
-        return
-    updated = db.update_order_status(order.id, OrderStatus.PAID)
-    if updated is None:
-        return
-    from ..services.opencart_order import add_payment_confirmation_to_opencart, create_order_in_opencart
+    try:
+        order = db.get_order_by_external_payment_id(payment_id)
+        if order is None:
+            logger.warning("ЮKassa webhook: заказ не найден по payment_id={}", payment_id)
+            return
+        if order.status == OrderStatus.PAID:
+            logger.debug("ЮKassa webhook: заказ order_id={} уже оплачен, пропуск", order.id)
+            return
+        updated = db.update_order_status(order.id, OrderStatus.PAID)
+        if updated is None:
+            return
+        from ..services.opencart_order import add_payment_confirmation_to_opencart, create_order_in_opencart
 
-    oc_order_id = await create_order_in_opencart(updated)
-    if oc_order_id is not None:
-        db.set_order_opencart_id(updated.id, oc_order_id)
-        payment_comment = f'Платеж номер "{payment_id}" подтвержден'
-        # Небольшая задержка: OpenCart может ещё не видеть только что созданный заказ в api/order/history.
-        await asyncio.sleep(2)
-        await add_payment_confirmation_to_opencart(oc_order_id, payment_comment)
-    from ..handlers.admin import notify_admins_new_order
+        oc_order_id = await create_order_in_opencart(updated)
+        if oc_order_id is not None:
+            db.set_order_opencart_id(updated.id, oc_order_id)
+            payment_comment = f'Платеж номер "{payment_id}" подтвержден'
+            await asyncio.sleep(2)
+            await add_payment_confirmation_to_opencart(oc_order_id, payment_comment)
+        from ..handlers.admin import notify_admins_new_order
 
-    await notify_admins_new_order(bot=bot, order=updated)
-    # Сообщение клиенту
-    chat_id = db.get_user_tg_id(updated.user_id)
-    if chat_id is not None:
-        desired_datetime = (updated.desired_delivery_datetime or "").strip() or "—"
-        text = SUCCESS_TEMPLATE.format(
-            display_number=updated.display_order_number,
-            total=updated.total_amount,
-            desired_datetime=desired_datetime,
+        await notify_admins_new_order(bot=bot, order=updated)
+        chat_id = db.get_user_tg_id(updated.user_id)
+        if chat_id is not None:
+            desired_datetime = (updated.desired_delivery_datetime or "").strip() or "—"
+            text = SUCCESS_TEMPLATE.format(
+                display_number=updated.display_order_number,
+                total=updated.total_amount,
+                desired_datetime=desired_datetime,
+            )
+            if updated.delivery_address == "Самовывоз":
+                text += SUCCESS_PICKUP_APPEND.format(address=PICKUP_ADDRESS_DISPLAY)
+            try:
+                await bot.send_message(chat_id=chat_id, text=text)
+            except Exception as e:
+                logger.warning("Не удалось отправить клиенту сообщение об оплате: {}", e)
+        logger.info(
+            "ЮKassa webhook: оплата обработана — order_id={}, уведомления отправлены",
+            updated.id,
         )
-        if updated.delivery_address == "Самовывоз":
-            text += SUCCESS_PICKUP_APPEND.format(address=PICKUP_ADDRESS_DISPLAY)
-        try:
-            await bot.send_message(chat_id=chat_id, text=text)
-        except Exception as e:
-            logger.warning("Не удалось отправить клиенту сообщение об оплате: {}", e)
+    except Exception as e:
+        logger.exception("ЮKassa webhook: ошибка при обработке payment_id={}: {}", payment_id, e)
