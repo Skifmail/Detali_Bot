@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -65,26 +66,31 @@ def create_payment(
     if return_url:
         payload["confirmation"]["return_url"] = return_url
 
-    # Чек 54-ФЗ: email и позиции для отправки чека клиенту.
-    # В receipt.items amount — цена за единицу (unit price), quantity — число (не строка).
+    # Чек 54-ФЗ: email и позиции для отправки чека клиенту (сценарий «внешняя онлайн-касса»).
+    # amount — цена за единицу в рублях, строка "XXX.XX". Обязательны payment_mode, payment_subject.
     customer_email = (order.email or "").strip()
     if customer_email:
         receipt_items = []
         for item in order.items:
             title = (item.product.title or "Товар")[:128]
-            unit_price_str = f"{item.unit_price:.2f}"  # цена за единицу в формате "XXX.XX"
+            # Строго два знака после запятой, без артефактов float (рубли, не копейки).
+            unit_price_val = Decimal(str(item.unit_price)).quantize(Decimal("0.01"))
+            unit_price_str = str(unit_price_val)
             receipt_items.append(
                 {
                     "description": title,
-                    "quantity": float(item.quantity),  # число (2.0), как в API ЮKassa
+                    "quantity": float(item.quantity),
                     "amount": {"value": unit_price_str, "currency": "RUB"},
                     "vat_code": 1,  # Без НДС (УСН и т.п.)
+                    "payment_mode": "full_payment",  # обязательно для 54-ФЗ (внешняя касса)
+                    "payment_subject": "commodity",
                 }
             )
         if receipt_items:
             payload["receipt"] = {
                 "customer": {"email": customer_email},
                 "items": receipt_items,
+                "internet": True,
             }
 
     idempotence_key = f"order_{order.id}_{order.display_order_number}"
