@@ -66,17 +66,18 @@ def create_payment(
         payload["confirmation"]["return_url"] = return_url
 
     # Чек 54-ФЗ: email и позиции для отправки чека клиенту.
+    # В receipt.items amount — цена за единицу (unit price), quantity — число (не строка).
     customer_email = (order.email or "").strip()
     if customer_email:
         receipt_items = []
         for item in order.items:
             title = (item.product.title or "Товар")[:128]
-            item_value = f"{item.unit_price * item.quantity:.2f}"
+            unit_price_str = f"{item.unit_price:.2f}"  # цена за единицу в формате "XXX.XX"
             receipt_items.append(
                 {
                     "description": title,
-                    "quantity": f"{item.quantity}.000",
-                    "amount": {"value": item_value, "currency": "RUB"},
+                    "quantity": float(item.quantity),  # число (2.0), как в API ЮKassa
+                    "amount": {"value": unit_price_str, "currency": "RUB"},
                     "vat_code": 1,  # Без НДС (УСН и т.п.)
                 }
             )

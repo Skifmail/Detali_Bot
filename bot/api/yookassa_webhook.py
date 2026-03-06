@@ -76,6 +76,8 @@ async def _process_payment_succeeded(db: Any, bot: Any, payment_id: str) -> None
     if oc_order_id is not None:
         db.set_order_opencart_id(updated.id, oc_order_id)
         payment_comment = f'Платеж номер "{payment_id}" подтвержден'
+        # Небольшая задержка: OpenCart может ещё не видеть только что созданный заказ в api/order/history.
+        await asyncio.sleep(2)
         await add_payment_confirmation_to_opencart(oc_order_id, payment_comment)
     from ..handlers.admin import notify_admins_new_order
 
