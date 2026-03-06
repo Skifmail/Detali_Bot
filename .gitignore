@@ -18,3 +18,6 @@ wheels/
 bot/.env
 *.sqlite3
 bot/*.sqlite3
+
+# Логи (папка logs/ с .gitkeep остаётся в репозитории)
+logs/*.log
