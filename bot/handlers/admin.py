@@ -93,8 +93,8 @@ TEXTS: dict[str, str] = {
     "users_line": "• id={id} tg={tg_id} | {name} | тел. {phone}",
     "users_empty": "👥 Пользователей пока нет.",
     "users_more": "\n\n… показаны последние {limit} из {total}.",
-    "admins_header": "👤 Администраторы бота\n\n{body}\n\nАдмины из переменной ADMIN_IDS нельзя удалить через бота.",
-    "admins_list_env": "Из окружения (ADMIN_IDS): {ids}",
+    "admins_header": "👤 Администраторы бота\n\n{body}\n\nSuperAdmin (это Вы) нельзя удалить через бота",
+    "admins_list_env": "SuperAdmin (это Вы): {ids}",
     "admins_list_db": "Добавлены через бота: {ids}",
     "admins_list_all": "Всего: {ids}",
     "admins_add_prompt": (
@@ -103,7 +103,9 @@ TEXTS: dict[str, str] = {
     "admins_add_ok": "✅ Пользователь {user_id} добавлен в список администраторов.",
     "admins_add_already": "Пользователь {user_id} уже является администратором.",
     "admins_remove_ok": "✅ Пользователь {user_id} удалён из списка администраторов (из бота).",
-    "admins_remove_only_db": ("Удалить можно только тех, кто добавлен через бота. Админы из ADMIN_IDS остаются."),
+    "admins_remove_only_db": (
+        "Удалить можно только тех, кто добавлен через бота. SuperAdmin (это Вы) нельзя удалить через бота"
+    ),
     "admins_remove_empty": "Нет администраторов, добавленных через бота. Удалять нечего.",
     "orders_search_prompt": "🔍 Введите номер заказа (4 цифры) или телефон (формат +7XXXXXXXXXX или 8XXXXXXXXXX):",
     "orders_search_not_found": "По запросу <code>{query}</code> заказы не найдены.",
@@ -224,7 +226,7 @@ def _format_admins_message(bot: Bot, db: Database) -> str:
     db_ids = db.list_bot_admin_ids()
     all_ids = sorted(set(env_ids) | set(db_ids))
     if not all_ids:
-        body = "Список пуст. Добавьте админов через кнопку ниже или задайте ADMIN_IDS в .env."
+        body = "Список пуст. Добавьте админов через кнопку ниже."
     else:
         parts = []
         if env_ids:
@@ -874,7 +876,7 @@ async def handle_admin_users(callback: CallbackQuery) -> None:
     keyboard = InlineKeyboardBuilder()
     keyboard.row(
         InlineKeyboardButton(
-            text=TEXTS["back"],
+            text=KB_TEXTS["back"],
             callback_data="admin:back_more",
         ),
     )
@@ -980,7 +982,7 @@ async def handle_admin_admin_remove_list(callback: CallbackQuery) -> None:
                 reply_markup=InlineKeyboardBuilder()
                 .row(
                     InlineKeyboardButton(
-                        text=TEXTS["back"],
+                        text=KB_TEXTS["back"],
                         callback_data="admin:admins",
                     ),
                 )
