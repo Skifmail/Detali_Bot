@@ -26,12 +26,14 @@ from ..database.db import RECENT_ORDERS_LIMIT, Database
 from ..database.models import Order, OrderStatus, User
 from ..keyboards.kb import TEXTS as KB_TEXTS
 from ..keyboards.kb import (
+    build_admin_admins_keyboard,
     build_admin_main_keyboard,
     build_admin_more_keyboard,
     build_admin_more_reply_keyboard,
     build_admin_order_details_keyboard,
     build_admin_orders_keyboard,
     build_admin_orders_reply_keyboard,
+    build_admin_remove_admins_keyboard,
     build_admin_status_change_keyboard,
     build_export_orders_period_keyboard,
     build_main_menu_keyboard,
@@ -91,6 +93,18 @@ TEXTS: dict[str, str] = {
     "users_line": "• id={id} tg={tg_id} | {name} | тел. {phone}",
     "users_empty": "👥 Пользователей пока нет.",
     "users_more": "\n\n… показаны последние {limit} из {total}.",
+    "admins_header": "👤 Администраторы бота\n\n{body}\n\nАдмины из переменной ADMIN_IDS нельзя удалить через бота.",
+    "admins_list_env": "Из окружения (ADMIN_IDS): {ids}",
+    "admins_list_db": "Добавлены через бота: {ids}",
+    "admins_list_all": "Всего: {ids}",
+    "admins_add_prompt": (
+        "Введите Telegram ID пользователя (целое число). " "Узнать ID: @userinfobot или бот Get My ID."
+    ),
+    "admins_add_ok": "✅ Пользователь {user_id} добавлен в список администраторов.",
+    "admins_add_already": "Пользователь {user_id} уже является администратором.",
+    "admins_remove_ok": "✅ Пользователь {user_id} удалён из списка администраторов (из бота).",
+    "admins_remove_only_db": ("Удалить можно только тех, кто добавлен через бота. Админы из ADMIN_IDS остаются."),
+    "admins_remove_empty": "Нет администраторов, добавленных через бота. Удалять нечего.",
     "orders_search_prompt": "🔍 Введите номер заказа (4 цифры) или телефон (формат +7XXXXXXXXXX или 8XXXXXXXXXX):",
     "orders_search_not_found": "По запросу <code>{query}</code> заказы не найдены.",
     "orders_search_results": "📦 Найденные заказы по запросу: <code>{query}</code>",
@@ -177,6 +191,12 @@ class AdminContactForm(StatesGroup):
     contact = State()
 
 
+class AdminAdminsForm(StatesGroup):
+    """Состояния FSM для добавления администратора по Telegram ID."""
+
+    add_id = State()
+
+
 @router.message(F.text == KB_TEXTS["admin_orders_search"])
 async def handle_admin_orders_search_start(
     message: Message,
@@ -189,6 +209,31 @@ async def handle_admin_orders_search_start(
 
     await state.set_state(AdminOrderSearchForm.query)
     await message.answer(TEXTS["orders_search_prompt"])
+
+
+def _refresh_bot_admin_ids(bot: Bot, db: Database) -> None:
+    """Обновляет bot.admin_ids: объединение админов из env и из таблицы bot_admins."""
+    env_ids: set[int] = getattr(bot, "_admin_ids_from_env", set())
+    db_ids = set(db.list_bot_admin_ids())
+    bot.admin_ids = env_ids | db_ids
+
+
+def _format_admins_message(bot: Bot, db: Database) -> str:
+    """Формирует текст списка администраторов для раздела «Администраторы»."""
+    env_ids = sorted(getattr(bot, "_admin_ids_from_env", set()))
+    db_ids = db.list_bot_admin_ids()
+    all_ids = sorted(set(env_ids) | set(db_ids))
+    if not all_ids:
+        body = "Список пуст. Добавьте админов через кнопку ниже или задайте ADMIN_IDS в .env."
+    else:
+        parts = []
+        if env_ids:
+            parts.append(TEXTS["admins_list_env"].format(ids=", ".join(str(x) for x in env_ids)))
+        if db_ids:
+            parts.append(TEXTS["admins_list_db"].format(ids=", ".join(str(x) for x in db_ids)))
+        parts.append(TEXTS["admins_list_all"].format(ids=", ".join(str(x) for x in all_ids)))
+        body = "\n".join(parts)
+    return TEXTS["admins_header"].format(body=body)
 
 
 def _build_broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -438,6 +483,19 @@ async def handle_admin_users_message(message: Message) -> None:
     users = db.list_users(limit=limit)
     text = _format_users_message(users, total, limit)
     await message.answer(text)
+
+
+@router.message(F.text == KB_TEXTS["menu_admins"])
+async def handle_admin_admins_message(message: Message) -> None:
+    """Показывает список администраторов и кнопки добавить/удалить."""
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+        return
+    db = get_db_from_message(message)
+    text = _format_admins_message(message.bot, db)
+    await message.answer(
+        text,
+        reply_markup=build_admin_admins_keyboard(),
+    )
 
 
 @router.message(F.text == KB_TEXTS["back"])
@@ -833,8 +891,9 @@ async def handle_admin_users(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "admin:back_more")
+@router.callback_query(F.data == "admin:more")
 async def handle_admin_back_more(callback: CallbackQuery) -> None:
-    """Возврат из экрана «Пользователи» в меню «Дополнительные действия»."""
+    """Возврат в меню «Дополнительные действия» (Ещё)."""
     await callback.answer()
     if callback.message is None or callback.from_user is None:
         return
@@ -844,6 +903,134 @@ async def handle_admin_back_more(callback: CallbackQuery) -> None:
         await callback.message.edit_text(
             text="Дополнительные действия:",
             reply_markup=build_admin_more_keyboard(),
+        )
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(F.data == "admin:admins")
+async def handle_admin_admins_callback(callback: CallbackQuery) -> None:
+    """Показывает список администраторов по кнопке «Администраторы» в меню «Ещё»."""
+    await callback.answer()
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+    db = get_db_from_callback(callback)
+    text = _format_admins_message(callback.bot, db)
+    try:
+        await callback.message.edit_text(
+            text=text,
+            reply_markup=build_admin_admins_keyboard(),
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(text=text, reply_markup=build_admin_admins_keyboard())
+
+
+@router.callback_query(F.data == "admin:admin_add")
+async def handle_admin_admin_add_start(callback: CallbackQuery, state: FSMContext) -> None:
+    """Запускает сценарий добавления администратора по Telegram ID."""
+    await callback.answer()
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+    await state.set_state(AdminAdminsForm.add_id)
+    await callback.message.answer(TEXTS["admins_add_prompt"])
+
+
+@router.message(AdminAdminsForm.add_id, F.text)
+async def handle_admin_admin_add_id(message: Message, state: FSMContext) -> None:
+    """Обрабатывает введённый Telegram ID и добавляет пользователя в список админов."""
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    await state.clear()
+    if not text or not text.isdigit():
+        await message.answer("Введите одно целое число (Telegram ID).")
+        return
+    user_id = int(text)
+    if user_id <= 0:
+        await message.answer("Telegram ID должен быть положительным числом.")
+        return
+    db = get_db_from_message(message)
+    added = db.add_bot_admin(user_id)
+    _refresh_bot_admin_ids(message.bot, db)
+    if added:
+        await message.answer(TEXTS["admins_add_ok"].format(user_id=user_id))
+    else:
+        await message.answer(TEXTS["admins_add_already"].format(user_id=user_id))
+
+
+@router.callback_query(F.data == "admin:admin_remove")
+async def handle_admin_admin_remove_list(callback: CallbackQuery) -> None:
+    """Показывает список админов из БД для удаления (админов из env удалить нельзя)."""
+    await callback.answer()
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+    db = get_db_from_callback(callback)
+    db_ids = db.list_bot_admin_ids()
+    if not db_ids:
+        try:
+            await callback.message.edit_text(
+                text=TEXTS["admins_remove_empty"],
+                reply_markup=InlineKeyboardBuilder()
+                .row(
+                    InlineKeyboardButton(
+                        text=TEXTS["back"],
+                        callback_data="admin:admins",
+                    ),
+                )
+                .as_markup(),
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                TEXTS["admins_remove_empty"],
+                reply_markup=build_admin_admins_keyboard(),
+            )
+        return
+    text = TEXTS["admins_remove_only_db"] + "\n\nВыберите, кого удалить:"
+    try:
+        await callback.message.edit_text(
+            text=text,
+            reply_markup=build_admin_remove_admins_keyboard(db_ids),
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            text=text,
+            reply_markup=build_admin_remove_admins_keyboard(db_ids),
+        )
+
+
+@router.callback_query(F.data.startswith("admin:admin_remove:"))
+async def handle_admin_admin_remove_do(callback: CallbackQuery) -> None:
+    """Удаляет выбранного администратора из таблицы bot_admins и обновляет bot.admin_ids."""
+    await callback.answer()
+    if callback.message is None or callback.from_user is None:
+        return
+    if not is_admin(callback.from_user.id, callback.bot):
+        return
+    prefix = "admin:admin_remove:"
+    raw = (callback.data or "").strip()
+    if not raw.startswith(prefix):
+        return
+    try:
+        user_id = int(raw[len(prefix) :].strip())
+    except ValueError:
+        return
+    db = get_db_from_callback(callback)
+    removed = db.remove_bot_admin(user_id)
+    _refresh_bot_admin_ids(callback.bot, db)
+    if removed:
+        await callback.message.answer(TEXTS["admins_remove_ok"].format(user_id=user_id))
+    text = _format_admins_message(callback.bot, db)
+    try:
+        await callback.message.edit_text(
+            text=text,
+            reply_markup=build_admin_admins_keyboard(),
         )
     except TelegramBadRequest:
         pass

@@ -98,12 +98,16 @@ async def main() -> None:
     )
 
     dp = Dispatcher()
-    # Регистрируем зависимости в диспетчере для последующей инъекции в хэндлеры и мидлвари.
+    admin_ids_from_env = _load_admin_ids()
+    admin_ids_from_db = set(db.list_bot_admin_ids())
+    merged_admin_ids = admin_ids_from_env | admin_ids_from_db
     dp["db"] = db
-    dp["admin_ids"] = _load_admin_ids()
+    dp["admin_ids"] = merged_admin_ids
     # Временный бридж для существующего кода, использующего bot.db / bot.admin_ids.
     bot.db = db
-    bot.admin_ids = dp["admin_ids"]
+    bot.admin_ids = merged_admin_ids
+    # Админы из env нельзя удалить через бота; при добавлении/удалении в БД обновляем bot.admin_ids.
+    bot._admin_ids_from_env = admin_ids_from_env
     dp.update.middleware(UserMiddleware())
 
     dp.include_router(start.router)

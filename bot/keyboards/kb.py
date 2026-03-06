@@ -34,6 +34,7 @@ TEXTS: dict[str, str] = {
     "menu_more": "Ещё",
     "menu_sync_catalog": "🔄 Обновить каталог",
     "menu_users": "👥 Пользователи",
+    "menu_admins": "👤 Администраторы",
     "menu_admin_contact": "📞 Контакты админов для клиентов",
     "admin_orders_search": "🔍 Найти заказ",
     "admin_orders_new": "Новые",
@@ -98,9 +99,10 @@ def build_admin_more_reply_keyboard() -> ReplyKeyboardMarkup:
         KeyboardButton(text=TEXTS["menu_users"]),
     )
     builder.row(
+        KeyboardButton(text=TEXTS["menu_admins"]),
         KeyboardButton(text=TEXTS["menu_admin_contact"]),
-        KeyboardButton(text=TEXTS["back"]),
     )
+    builder.row(KeyboardButton(text=TEXTS["back"]))
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -765,7 +767,7 @@ def build_admin_more_keyboard() -> InlineKeyboardMarkup:
     """Создаёт инлайн-клавиатуру для кнопки «Ещё» в меню админа (плитка по 2 кнопки в строку).
 
     Returns:
-        InlineKeyboardMarkup: Кнопки «Обновить каталог», «Пользователи», контакт, «Назад».
+        InlineKeyboardMarkup: Кнопки «Обновить каталог», «Пользователи», «Администраторы», контакт, «Назад».
     """
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -780,12 +782,59 @@ def build_admin_more_keyboard() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(
+            text="👤 Администраторы",
+            callback_data="admin:admins",
+        ),
+        InlineKeyboardButton(
             text="📞 Контакт для связи с клиентами",
             callback_data="admin:contact_edit",
         ),
+    )
+    builder.row(
         InlineKeyboardButton(
             text=TEXTS["back"],
             callback_data="nav:back_main",
+        ),
+    )
+    return builder.as_markup()
+
+
+def build_admin_admins_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура раздела «Администраторы»: добавить, удалить, назад в Ещё."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="➕ Добавить админа",
+            callback_data="admin:admin_add",
+        ),
+        InlineKeyboardButton(
+            text="➖ Удалить админа",
+            callback_data="admin:admin_remove",
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=TEXTS["back"],
+            callback_data="admin:more",
+        ),
+    )
+    return builder.as_markup()
+
+
+def build_admin_remove_admins_keyboard(db_admin_ids: list[int]) -> InlineKeyboardMarkup:
+    """Кнопки удаления админов (только те, что добавлены через бота; по одной на ID)."""
+    builder = InlineKeyboardBuilder()
+    for uid in db_admin_ids[:25]:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"❌ Удалить {uid}",
+                callback_data=f"admin:admin_remove:{uid}",
+            ),
+        )
+    builder.row(
+        InlineKeyboardButton(
+            text=TEXTS["back"],
+            callback_data="admin:admins",
         ),
     )
     return builder.as_markup()

@@ -207,6 +207,7 @@ class Database:
         self._migrate_categories_opencart_id()
         self._migrate_admin_order_notifications()
         self._migrate_bot_settings()
+        self._migrate_bot_admins()
 
     def _migrate_bot_settings(self) -> None:
         """Создаёт таблицу настроек бота (ключ-значение), в т.ч. контакт админа для клиентов."""
@@ -217,6 +218,18 @@ class Database:
                 CREATE TABLE IF NOT EXISTS bot_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL DEFAULT ''
+                );
+                """,
+            )
+
+    def _migrate_bot_admins(self) -> None:
+        """Создаёт таблицу администраторов бота (добавленных через интерфейс; из env не хранятся)."""
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_admins (
+                    user_id INTEGER PRIMARY KEY
                 );
                 """,
             )
@@ -386,6 +399,43 @@ class Database:
         trimmed = [str(c).strip() for c in contacts if str(c).strip()][: self.ADMIN_CONTACTS_MAX]
         self.set_setting(self.ADMIN_CONTACTS_KEY, json.dumps(trimmed, ensure_ascii=False))
         self.set_setting(self.ADMIN_CONTACT_KEY, "")
+
+    def list_bot_admin_ids(self) -> list[int]:
+        """Возвращает список Telegram ID администраторов, добавленных через бота (из таблицы bot_admins).
+
+        Админы из переменной окружения ADMIN_IDS сюда не входят — они подмешиваются при старте.
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM bot_admins ORDER BY user_id;")
+            return [int(row[0]) for row in cursor.fetchall()]
+
+    def add_bot_admin(self, user_id: int) -> bool:
+        """Добавляет пользователя в список администраторов бота (таблица bot_admins).
+
+        Returns:
+            True, если запись добавлена; False, если такой user_id уже есть.
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("INSERT INTO bot_admins (user_id) VALUES (?);", (user_id,))
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def remove_bot_admin(self, user_id: int) -> bool:
+        """Удаляет пользователя из списка администраторов бота (только из таблицы bot_admins).
+
+        Админов из ADMIN_IDS через этот метод удалить нельзя.
+
+        Returns:
+            True, если запись удалена; False, если такой user_id не был в bot_admins.
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM bot_admins WHERE user_id = ?;", (user_id,))
+            return cursor.rowcount > 0
 
     def _seed_if_empty(self) -> None:
         """Заполняет БД тестовыми данными, если она пуста.
