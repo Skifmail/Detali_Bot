@@ -105,10 +105,11 @@ cd bot && python -m bot.main
    ```bash
    sudo systemctl stop detali-bot
    ```
-2. Выполнить скрипт из корня проекта:
+2. Выполнить скрипт из корня проекта (сначала можно проверить: `--dry-run` — только показать, сколько записей будет удалено):
    ```bash
    cd /root/Detali_Bot
-   uv run python scripts/clear_test_orders.py
+   uv run python scripts/clear_test_orders.py --dry-run   # проверка
+   uv run python scripts/clear_test_orders.py             # реальное удаление
    ```
 3. Запустить бота:
    ```bash
