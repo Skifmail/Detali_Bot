@@ -76,9 +76,9 @@ def create_payment(
     receipt_items: list[dict[str, Any]] = []
     for item in order.items:
         title = (item.product.title or "Товар")[:128]
-        unit_price_rub = Decimal(str(item.unit_price)).quantize(Decimal("0.01"))
-        # Строка ровно с двумя знаками после запятой, без преобразований SDK.
-        value_str = f"{unit_price_rub:.2f}"
+        # В 54-ФЗ для сторонней кассы amount — сумма по позиции (quantity * unit_price), строка "XXX.XX".
+        line_total = Decimal(str(item.quantity * item.unit_price)).quantize(Decimal("0.01"))
+        value_str = f"{line_total:.2f}"
         receipt_items.append(
             {
                 "description": title,
