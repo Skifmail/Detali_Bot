@@ -799,19 +799,24 @@ def build_admin_more_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def build_admin_admins_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура раздела «Администраторы»: добавить, удалить, назад в Ещё."""
+def build_admin_admins_keyboard(*, can_manage: bool = True) -> InlineKeyboardMarkup:
+    """Клавиатура раздела «Администраторы».
+
+    Args:
+        can_manage: Если False, показывается только кнопка «Назад», без кнопок добавления/удаления.
+    """
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(
-            text="➕ Добавить админа",
-            callback_data="admin:admin_add",
-        ),
-        InlineKeyboardButton(
-            text="➖ Удалить админа",
-            callback_data="admin:admin_remove",
-        ),
-    )
+    if can_manage:
+        builder.row(
+            InlineKeyboardButton(
+                text="➕ Добавить админа",
+                callback_data="admin:admin_add",
+            ),
+            InlineKeyboardButton(
+                text="➖ Удалить админа",
+                callback_data="admin:admin_remove",
+            ),
+        )
     builder.row(
         InlineKeyboardButton(
             text=TEXTS["back"],

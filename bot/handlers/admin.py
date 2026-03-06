@@ -206,7 +206,7 @@ async def handle_admin_orders_search_start(
 ) -> None:
     """Запускает сценарий поиска заказа по номеру или телефону из reply-клавиатуры."""
 
-    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+    if message.from_user is None or not _is_superadmin(message.from_user.id, message.bot):
         return
 
     await state.set_state(AdminOrderSearchForm.query)
@@ -218,6 +218,12 @@ def _refresh_bot_admin_ids(bot: Bot, db: Database) -> None:
     env_ids: set[int] = getattr(bot, "_admin_ids_from_env", set())
     db_ids = set(db.list_bot_admin_ids())
     bot.admin_ids = env_ids | db_ids
+
+
+def _is_superadmin(user_id: int, bot: Bot) -> bool:
+    """Проверяет, является ли пользователь супер-админом (задан в ADMIN_IDS)."""
+    env_ids: set[int] = getattr(bot, "_admin_ids_from_env", set())
+    return user_id in env_ids
 
 
 def _format_admins_message(bot: Bot, db: Database) -> str:
@@ -494,9 +500,10 @@ async def handle_admin_admins_message(message: Message) -> None:
         return
     db = get_db_from_message(message)
     text = _format_admins_message(message.bot, db)
+    can_manage = _is_superadmin(message.from_user.id, message.bot)
     await message.answer(
         text,
-        reply_markup=build_admin_admins_keyboard(),
+        reply_markup=build_admin_admins_keyboard(can_manage=can_manage),
     )
 
 
@@ -527,7 +534,8 @@ async def handle_admin_export_orders_period(callback: CallbackQuery) -> None:
     await callback.answer()
     if callback.message is None or callback.from_user is None:
         return
-    if not is_admin(callback.from_user.id, callback.bot):
+    if not _is_superadmin(callback.from_user.id, callback.bot):
+        await callback.answer("Только главный администратор может управлять списком админов.", show_alert=True)
         return
     period = (callback.data or "").split(":")[-1]
     now = datetime.now(UTC)
@@ -568,7 +576,8 @@ async def handle_admin_order_message_start(
     await callback.answer()
     if callback.message is None or callback.from_user is None:
         return
-    if not is_admin(callback.from_user.id, callback.bot):
+    if not _is_superadmin(callback.from_user.id, callback.bot):
+        await callback.answer("Только главный администратор может управлять списком админов.", show_alert=True)
         return
     prefix = "admin:order_message:"
     raw = callback.data or ""
@@ -599,7 +608,7 @@ async def handle_admin_order_message_text(
     state: FSMContext,
 ) -> None:
     """Отправляет введённое сообщение клиенту по заказу с инфой о заказе и контактом админа."""
-    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+    if message.from_user is None or not _is_superadmin(message.from_user.id, message.bot):
         await state.clear()
         return
     text = (message.text or "").strip()
@@ -682,7 +691,8 @@ async def handle_admin_contact_edit_start(
     await callback.answer()
     if callback.message is None or callback.from_user is None:
         return
-    if not is_admin(callback.from_user.id, callback.bot):
+    if not _is_superadmin(callback.from_user.id, callback.bot):
+        await callback.answer("Только главный администратор может управлять списком админов.", show_alert=True)
         return
     db = get_db_from_callback(callback)
     contacts = db.get_admin_contacts()
@@ -866,7 +876,8 @@ async def handle_admin_users(callback: CallbackQuery) -> None:
     await callback.answer()
     if callback.message is None or callback.from_user is None:
         return
-    if not is_admin(callback.from_user.id, callback.bot):
+    if not _is_superadmin(callback.from_user.id, callback.bot):
+        await callback.answer("Только главный администратор может управлять списком админов.", show_alert=True)
         return
     db = get_db_from_callback(callback)
     total = db.count_users()
@@ -899,7 +910,8 @@ async def handle_admin_back_more(callback: CallbackQuery) -> None:
     await callback.answer()
     if callback.message is None or callback.from_user is None:
         return
-    if not is_admin(callback.from_user.id, callback.bot):
+    if not _is_superadmin(callback.from_user.id, callback.bot):
+        await callback.answer("Только главный администратор может управлять списком админов.", show_alert=True)
         return
     try:
         await callback.message.edit_text(
@@ -920,13 +932,17 @@ async def handle_admin_admins_callback(callback: CallbackQuery) -> None:
         return
     db = get_db_from_callback(callback)
     text = _format_admins_message(callback.bot, db)
+    can_manage = _is_superadmin(callback.from_user.id, callback.bot)
     try:
         await callback.message.edit_text(
             text=text,
-            reply_markup=build_admin_admins_keyboard(),
+            reply_markup=build_admin_admins_keyboard(can_manage=can_manage),
         )
     except TelegramBadRequest:
-        await callback.message.answer(text=text, reply_markup=build_admin_admins_keyboard())
+        await callback.message.answer(
+            text=text,
+            reply_markup=build_admin_admins_keyboard(can_manage=can_manage),
+        )
 
 
 @router.callback_query(F.data == "admin:admin_add")
