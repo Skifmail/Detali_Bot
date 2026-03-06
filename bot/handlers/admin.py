@@ -93,8 +93,8 @@ TEXTS: dict[str, str] = {
     "users_line": "• id={id} tg={tg_id} | {name} | тел. {phone}",
     "users_empty": "👥 Пользователей пока нет.",
     "users_more": "\n\n… показаны последние {limit} из {total}.",
-    "admins_header": "👤 Администраторы бота\n\n{body}\n\nSuperAdmin (это Вы) нельзя удалить через бота",
-    "admins_list_env": "SuperAdmin (это Вы): {ids}",
+    "admins_header": "👤 Администраторы бота\n\n{body}\n\n",
+    "admins_list_env": "SuperAdmin: {ids}",
     "admins_list_db": "Добавлены через бота: {ids}",
     "admins_list_all": "Всего: {ids}",
     "admins_add_prompt": (
