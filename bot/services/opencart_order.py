@@ -1,7 +1,16 @@
-"""Создание заказа в OpenCart через API после подтверждения в боте."""
+"""Создание заказа в OpenCart через API после подтверждения в боте.
+
+Чтобы в заказе OpenCart была правильная доставка (город и сумма), адрес плательщика
+и доставки задаётся с zone_id, соответствующим городу из заказа бота. Иначе OpenCart
+подставляет одну зону (OPENCART_ZONE_ID) и всегда возвращает один способ доставки
+(например только «Коломна 400 ₽»). Маппинг город → zone_id задаётся в env через
+OPENCART_ZONE_BY_CITY (JSON), без хардкода списка городов в коде.
+"""
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any
 
 from loguru import logger
@@ -56,6 +65,51 @@ async def add_payment_confirmation_to_opencart(
 
 
 DEFAULT_CUSTOMER_FIRST_NAME = "Клиент"
+
+
+def _parse_zone_by_city_from_env() -> dict[str, int]:
+    """Читает маппинг город → zone_id из OPENCART_ZONE_BY_CITY (JSON).
+
+    Пример в .env: OPENCART_ZONE_BY_CITY={"Москва": 77, "Коломна": 123}
+    Ключи при поиске приводятся к нижнему регистру — «Москва» и «москва» эквивалентны.
+    Неверный JSON или пустое значение — возвращается пустой словарь.
+    """
+    raw = (os.getenv("OPENCART_ZONE_BY_CITY") or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    result: dict[str, int] = {}
+    for k, v in data.items():
+        key = (k or "").strip().lower()
+        if not key:
+            continue
+        try:
+            result[key] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _get_zone_id_for_city(
+    delivery_city: str | None,
+    default_zone_id: int,
+    zone_by_city: dict[str, int] | None = None,
+) -> int:
+    """Возвращает zone_id для адреса доставки: из маппинга по городу или default.
+
+    Маппинг берётся из OPENCART_ZONE_BY_CITY (JSON в env), если не передан zone_by_city.
+    Так для любого города можно задать свой zone_id OpenCart без правок кода.
+    """
+    city = (delivery_city or "").strip().lower()
+    if not city:
+        return default_zone_id
+    mapping = zone_by_city if zone_by_city is not None else _parse_zone_by_city_from_env()
+    return mapping.get(city, default_zone_id)
 
 
 def _split_name(full_name: str) -> tuple[str, str]:
@@ -131,6 +185,19 @@ async def create_order_in_opencart(order: Order) -> int | None:
         )
         return None
 
+    zone_by_city = _parse_zone_by_city_from_env()
+    zone_id = _get_zone_id_for_city(
+        order.delivery_city,
+        config.default_zone_id,
+        zone_by_city=zone_by_city,
+    )
+    if zone_id != config.default_zone_id:
+        logger.info(
+            "OpenCart: для города «{}» используется zone_id={} (OPENCART_ZONE_BY_CITY)",
+            order.delivery_city,
+            zone_id,
+        )
+
     async with OpenCartClient(config) as client:
         try:
             await client.login()
@@ -146,7 +213,7 @@ async def create_order_in_opencart(order: Order) -> int | None:
                 lastname=lastname,
                 address_1=address_1,
                 city=city,
-                zone_id=config.default_zone_id,
+                zone_id=zone_id,
                 country_id=config.default_country_id,
                 postcode=postcode,
             )
@@ -157,7 +224,7 @@ async def create_order_in_opencart(order: Order) -> int | None:
                 lastname=lastname,
                 address_1=address_1,
                 city=city,
-                zone_id=config.default_zone_id,
+                zone_id=zone_id,
                 country_id=config.default_country_id,
                 postcode=postcode,
             )
@@ -227,16 +294,18 @@ def _select_shipping_code(
     delivery_city: str,
     delivery_cost: int,
 ) -> str | None:
-    """Выбирает код способа доставки по городу или стоимости, чтобы заказ в OpenCart
-    совпадал с выбором в боте (не «Самовывоз», если выбрана доставка по городу).
+    """Выбирает код способа доставки по городу и стоимости из заказа бота.
 
-    По структуре OpenCart {ext: {quote: {key: {code, title, cost}}}} ищет совпадение
-    по title (город) или cost; иначе первый не-самовывоз; иначе первый любой.
+    Приоритет: 1) совпадение по городу (title содержит город); 2) совпадение по стоимости;
+    3) любой не-самовывоз; 4) любой. Так заказ в OpenCart получает правильные город и сумму
+    доставки (например Москва 2000 ₽, а не Коломна 400 ₽).
+
+    По структуре OpenCart: {ext: {quote: {key: {code, title, cost}}}}.
 
     Args:
         shipping_methods: Ответ get_shipping_methods().
-        delivery_city: Город доставки из заказа бота (например «Коломна»).
-        delivery_cost: Стоимость доставки в рублях (например 400).
+        delivery_city: Город доставки из заказа бота (например «Москва»).
+        delivery_cost: Стоимость доставки в рублях (например 2000).
 
     Returns:
         Код способа доставки (например flat.flat) или None.
@@ -245,9 +314,8 @@ def _select_shipping_code(
         return None
     city_lower = (delivery_city or "").strip().lower()
     is_pickup_choice = city_lower in ("самовывоз", "pickup", "")
-    candidates: list[tuple[int, str]] = (
-        []
-    )  # приоритет: 0=город/стоимость, 1=самовывоз при выборе самовывоза, 2=не самовывоз, 3=любой
+    # Приоритет: 0=город, 1=стоимость, 2=самовывоз, 3=не самовывоз, 4=любой
+    candidates: list[tuple[int, str, str]] = []  # (приоритет, code, title для лога)
     for ext_key, ext_val in shipping_methods.items():
         if not isinstance(ext_val, dict):
             continue
@@ -258,7 +326,8 @@ def _select_shipping_code(
             if not isinstance(quote_data, dict):
                 continue
             code = quote_data.get("code") or f"{ext_key}.{quote_key}"
-            title = (quote_data.get("title") or "").strip().lower()
+            title = (quote_data.get("title") or "").strip()
+            title_lower = title.lower()
             cost = quote_data.get("cost")
             if cost is not None and not isinstance(cost, int | float):
                 try:
@@ -267,26 +336,35 @@ def _select_shipping_code(
                     cost = 0
             elif cost is None:
                 cost = 0
-            is_pickup = "самовывоз" in title or quote_key == "pickup"
-            if (
-                is_pickup_choice
-                and is_pickup
-                or not is_pickup_choice
-                and city_lower
-                and title
-                and city_lower in title
-                or not is_pickup_choice
-                and delivery_cost
-                and cost == delivery_cost
-            ):
-                candidates.append((0, code))
-            elif is_pickup_choice and not is_pickup:
-                candidates.append((2, code))
+            is_pickup = "самовывоз" in title_lower or quote_key == "pickup"
+            if is_pickup_choice and is_pickup:
+                candidates.append((2, code, title))
+            elif not is_pickup_choice and city_lower and title_lower and city_lower in title_lower:
+                candidates.append((0, code, title))  # совпадение по городу — наивысший приоритет
+            elif not is_pickup_choice and delivery_cost and cost == delivery_cost:
+                candidates.append((1, code, title))  # совпадение по стоимости
             elif not is_pickup:
-                candidates.append((1, code))
+                candidates.append((3, code, title))
             else:
-                candidates.append((3, code))
+                candidates.append((4, code, title))
     if not candidates:
         return None
     candidates.sort(key=lambda x: x[0])
-    return candidates[0][1]
+    selected_priority, selected_code, selected_title = candidates[0][0], candidates[0][1], candidates[0][2]
+    logger.info(
+        "OpenCart доставка: заказ город={}, cost={} ₽ → выбран «{}» (code={}, приоритет={})",
+        delivery_city,
+        delivery_cost,
+        selected_title,
+        selected_code,
+        selected_priority,
+    )
+    if selected_priority > 1 and (city_lower or delivery_cost):
+        logger.warning(
+            "OpenCart: по заказу город «{}» и доставка {} ₽, но выбран способ «{}». "
+            "Проверьте, что в OpenCart настроены зоны/доставки для этого города с нужной ценой.",
+            delivery_city,
+            delivery_cost,
+            selected_title,
+        )
+    return selected_code
