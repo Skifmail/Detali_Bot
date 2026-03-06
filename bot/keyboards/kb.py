@@ -543,14 +543,33 @@ def build_delivery_time_keyboard(
     return builder.as_markup()
 
 
-def build_order_confirmation_keyboard() -> InlineKeyboardMarkup:
-    """Создаёт клавиатуру подтверждения или отмены оформления заказа.
+def build_order_confirmation_keyboard(
+    *,
+    offer_url: str | None = None,
+    privacy_policy_url: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Создаёт клавиатуру подтверждения заказа, отмены и при необходимости ссылок на оферту/политику.
+
+    Args:
+        offer_url: URL договора-оферты. Если задан, добавляется кнопка «Оферта».
+        privacy_policy_url: URL политики обработки ПДн. Если задан, добавляется кнопка.
 
     Returns:
-        InlineKeyboardMarkup: Инлайн-клавиатура с подтверждением и отменой.
+        InlineKeyboardMarkup: Инлайн-клавиатура с подтверждением, отменой и опционально ссылками.
     """
-
     builder = InlineKeyboardBuilder()
+    if offer_url or privacy_policy_url:
+        row: list[InlineKeyboardButton] = []
+        if offer_url:
+            row.append(
+                InlineKeyboardButton(text="📄 Оферта", url=offer_url),
+            )
+        if privacy_policy_url:
+            row.append(
+                InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=privacy_policy_url),
+            )
+        if row:
+            builder.row(*row)
     builder.row(
         InlineKeyboardButton(
             text="✅ Подтвердить",

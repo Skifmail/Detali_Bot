@@ -19,6 +19,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from loguru import logger
 
+from ..core.legal_config import get_offer_url, get_privacy_policy_url
 from ..database.db import Database
 from ..database.models import Order
 from ..keyboards.kb import (
@@ -120,7 +121,12 @@ TEXTS: dict[str, str] = {
         "Телефон: {phone}\n"
         "Email: {email}\n"
         "Комментарий: {comment}\n\n"
-        "Сумма к оплате: <b>{total} ₽</b>"
+        "Сумма к оплате: <b>{total} ₽</b>\n\n"
+        "{legal_notice}"
+    ),
+    "legal_notice": (
+        "Нажимая «Подтвердить», вы принимаете условия договора-оферты и соглашаетесь "
+        "с политикой обработки персональных данных."
     ),
     "summary_item": "• {title} — {price} ₽ × {qty} = {line_total} ₽",
     "empty_cart": "🛒 Ваша корзина пуста, оформить заказ нельзя.\n" "Добавьте товары из каталога.",
@@ -266,12 +272,16 @@ async def _build_and_show_summary(
         email=email,
         comment=comment or "—",
         total=total,
+        legal_notice=TEXTS["legal_notice"],
     )
 
     # Явно сохраняем email в state перед показом кнопки «Подтвердить», чтобы при подтверждении он точно был в data.
     await state.update_data(email=email)
     await state.set_state(OrderForm.confirm)
-    kb = build_order_confirmation_keyboard()
+    kb = build_order_confirmation_keyboard(
+        offer_url=get_offer_url(),
+        privacy_policy_url=get_privacy_policy_url(),
+    )
 
     if isinstance(target, Message):
         await target.answer(summary_text, reply_markup=kb, parse_mode="HTML")
