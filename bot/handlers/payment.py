@@ -17,6 +17,9 @@ TEXTS: dict[str, str] = {
     "payment_choice": "💳 Выберите способ оплаты заказа #{display_number} ({total} ₽):",
     "payment_intro": "💳 Оплата заказа #{display_number}\n\n"
     "Сумма к оплате: <b>{total} ₽</b>\n\n"
+    "Нажмите кнопку ниже, чтобы перейти к оплате.",
+    "payment_intro_mock": "💳 Оплата заказа #{display_number}\n\n"
+    "Сумма к оплате: <b>{total} ₽</b>\n\n"
     "Для демо используется тестовый сценарий оплаты без реального списания средств.",
     "processing": "⏳ Обрабатываем оплату…",
     "success": "✅ Оплата прошла успешно!\n\n"
@@ -87,8 +90,12 @@ async def show_payment_method_choice(
         )
 
 
-async def _start_mock_payment(message: Message, order_id: int) -> None:
-    """Запускает демонстрационный сценарий оплаты ЮКassa для указанного заказа.
+async def _start_yookassa_payment(message: Message, order_id: int) -> None:
+    """Запускает оплату ЮKassa: создаёт платёж и отправляет ссылку или мок-кнопку.
+
+    Если заданы YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY — создаётся реальный платёж,
+    сохраняется external_payment_id, клиенту отправляется ссылка на оплату.
+    Иначе — демо-кнопка с имитацией оплаты по callback.
 
     Args:
         message (Message): Сообщение, в который отправляется информация об оплате.
@@ -97,6 +104,8 @@ async def _start_mock_payment(message: Message, order_id: int) -> None:
     Returns:
         None: Ничего не возвращает.
     """
+    from ..core.yookassa_config import get_yookassa_config
+    from ..services.yookassa_payment import create_payment as yookassa_create_payment
 
     db = get_db_from_message(message)
     order: Order | None = db.get_order(order_id=order_id)
@@ -104,7 +113,21 @@ async def _start_mock_payment(message: Message, order_id: int) -> None:
         await message.answer("Не удалось найти заказ для оплаты.")
         return
 
-    intro_text = TEXTS["payment_intro"].format(
+    config = get_yookassa_config()
+    confirmation_url: str | None = None
+    if config:
+        result = await asyncio.to_thread(
+            yookassa_create_payment,
+            order,
+            shop_id=config.shop_id,
+            secret_key=config.secret_key,
+            return_url=config.return_url,
+        )
+        if result:
+            db.set_order_external_payment_id(order.id, result.payment_id)
+            confirmation_url = result.confirmation_url
+    intro_key = "payment_intro" if confirmation_url else "payment_intro_mock"
+    intro_text = TEXTS[intro_key].format(
         display_number=order.display_order_number,
         total=order.total_amount,
     )
@@ -113,6 +136,7 @@ async def _start_mock_payment(message: Message, order_id: int) -> None:
         reply_markup=build_payment_keyboard(
             amount=order.total_amount,
             order_id=order.id,
+            confirmation_url=confirmation_url,
         ),
         parse_mode="HTML",
     )
@@ -146,10 +170,8 @@ async def handle_payment_method_yookassa(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось обновить заказ.")
         return
 
-    # Уведомление админам при ЮKassa отправляется после оплаты (в handle_mock_payment).
-    # Для реальной интеграции с ЮKassa вместо мокового сценария нужно
-    # вызывать создание платежа в ЮKassa API и переадресовывать пользователя.
-    await _start_mock_payment(message=callback.message, order_id=order_id)
+    # Уведомление админам при ЮKassa отправляется после оплаты (webhook или handle_mock_payment).
+    await _start_yookassa_payment(message=callback.message, order_id=order_id)
 
 
 @router.callback_query(F.data.startswith("payment:method:cash:"))
@@ -179,7 +201,7 @@ async def handle_payment_method_cash(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось обновить заказ.")
         return
 
-    from bot.services.opencart_order import create_order_in_opencart
+    from ..services.opencart_order import create_order_in_opencart
 
     oc_order_id = await create_order_in_opencart(updated)
     if oc_order_id is not None:
@@ -230,8 +252,6 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
     if not (order_before.payment_method or "").strip():
         db.update_order_payment_method(order_id=order_id, payment_method="yookassa")
 
-    # TODO: заменить на реальный ЮKassa Payment.create; в чеке (receipt.customer.email)
-    # передать order.email — чеки будут уходить на email покупателя.
     await asyncio.sleep(2)
 
     updated = db.update_order_status(order_id=order_id, new_status=OrderStatus.PAID)
@@ -239,7 +259,7 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось обновить статус заказа после оплаты.")
         return
 
-    from bot.services.opencart_order import add_payment_confirmation_to_opencart, create_order_in_opencart
+    from ..services.opencart_order import add_payment_confirmation_to_opencart, create_order_in_opencart
 
     oc_order_id = await create_order_in_opencart(updated)
     if oc_order_id is not None:

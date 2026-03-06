@@ -1697,6 +1697,40 @@ class Database:
                 (opencart_order_id, order_id),
             )
 
+    def set_order_external_payment_id(self, order_id: int, external_payment_id: str) -> None:
+        """Сохраняет внешний идентификатор платежа (ЮKassa payment.id) для заказа.
+
+        Args:
+            order_id (int): Локальный id заказа.
+            external_payment_id (str): Идентификатор платежа в платёжной системе.
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE orders SET external_payment_id = ? WHERE id = ?;",
+                (external_payment_id, order_id),
+            )
+
+    def get_order_by_external_payment_id(self, external_payment_id: str) -> Order | None:
+        """Возвращает заказ по идентификатору платежа ЮKassa.
+
+        Args:
+            external_payment_id (str): payment.id из уведомления ЮKassa.
+
+        Returns:
+            Order или None, если заказ не найден.
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM orders WHERE external_payment_id = ?;",
+                (external_payment_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return self.get_order(int(row["id"]))
+
     # Статистика
 
     def get_stats(self) -> StatsSummary:

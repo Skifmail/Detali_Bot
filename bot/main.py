@@ -116,6 +116,30 @@ async def main() -> None:
     dp.include_router(contact_fallback.router)
 
     await _set_bot_commands(bot)
+
+    import uvicorn
+
+    from .api.yookassa_webhook import create_yookassa_webhook_app
+    from .core.yookassa_config import get_yookassa_config
+
+    yookassa_config = get_yookassa_config()
+    if yookassa_config is not None:
+        webhook_app = create_yookassa_webhook_app(bot=bot, db=db)
+        config = uvicorn.Config(
+            webhook_app,
+            host="0.0.0.0",
+            port=yookassa_config.webhook_port,
+            log_level="warning",
+        )
+        server = uvicorn.Server(config)
+        asyncio.create_task(server.serve())
+        logger.info(
+            "ЮKassa webhook: HTTP-сервер запущен на порту {} (URL для настройки в ЛК ЮKassa: https://ваш-домен/webhook/yookassa)",
+            yookassa_config.webhook_port,
+        )
+    else:
+        logger.info("ЮKassa не настроена (YOOKASSA_SHOP_ID/SECRET_KEY не заданы), оплата в режиме демо")
+
     logger.info("Запуск бота floraldetails demo")
     await dp.start_polling(bot)
 

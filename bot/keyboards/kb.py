@@ -616,24 +616,40 @@ def build_payment_method_keyboard(order_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def build_payment_keyboard(amount: int, order_id: int) -> InlineKeyboardMarkup:
-    """Создаёт клавиатуру для мока оплаты заказа (ЮКassa).
+def build_payment_keyboard(
+    amount: int,
+    order_id: int,
+    *,
+    confirmation_url: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Создаёт клавиатуру оплаты заказа (ЮKassa).
+
+    Если передан confirmation_url — кнопка ведёт на страницу оплаты ЮKassa.
+    Иначе — мок: кнопка с callback для имитации оплаты.
 
     Args:
         amount (int): Сумма заказа в рублях.
         order_id (int): Идентификатор заказа.
+        confirmation_url (str | None): URL для перехода к оплате (реальная ЮKassa).
 
     Returns:
         InlineKeyboardMarkup: Инлайн-клавиатура с кнопкой оплаты.
     """
-
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(
-            text=f"Оплатить {amount} ₽",
-            callback_data=f"payment:pay:{order_id}",
-        ),
-    )
+    if confirmation_url:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"Оплатить {amount} ₽",
+                url=confirmation_url,
+            ),
+        )
+    else:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"Оплатить {amount} ₽ (демо)",
+                callback_data=f"payment:pay:{order_id}",
+            ),
+        )
     return builder.as_markup()
 
 
