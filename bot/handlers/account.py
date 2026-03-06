@@ -34,11 +34,20 @@ TEXTS: dict[str, str] = {
         "📦 Заказ #{display_number}\n"
         "Статус: {status}\n"
         "Оплата: {payment_info}\n"
-        "Сумма: {total} ₽\n"
+        "Получатель: {customer_name}\n"
+        "Адрес доставки: {delivery_address}\n"
         "Дата и время доставки: {desired_datetime}\n\n"
-        "{items}"
+        "{items_block}\n"
+        "{table_footer}"
     ),
     "order_item": "• {title} — {price} ₽ × {qty} = {line_total} ₽",
+    "order_table_footer": (
+        "────────────────────\n"
+        "Сумма товаров: {items_total} ₽\n"
+        "Доставка: {delivery} ₽\n"
+        "────────────────────\n"
+        "Итого: {total} ₽"
+    ),
     "cancel_done": "Заказ #{display_number} отменён.",
     "cancel_forbidden": "Этот заказ нельзя отменить.",
     "cancel_not_yours": "Заказ не найден или вам недоступен.",
@@ -138,15 +147,24 @@ async def handle_account_order_detail(callback: CallbackQuery) -> None:
         )
         for item in order.items
     ]
+    items_total = sum(item.unit_price * item.quantity for item in order.items)
+    items_block = "\n".join(lines) if lines else "—"
+    table_footer = TEXTS["order_table_footer"].format(
+        items_total=items_total,
+        delivery=order.delivery_cost,
+        total=order.total_amount,
+    )
     payment_info = _format_payment_info_user(order)
     desired_datetime = (order.desired_delivery_datetime or "").strip() or "—"
     text = TEXTS["order_detail"].format(
         display_number=order.display_order_number,
         status=order.status.human_readable,
         payment_info=payment_info,
-        total=order.total_amount,
+        customer_name=(order.customer_name or "").strip() or "—",
+        delivery_address=(order.delivery_address or "").strip() or "—",
         desired_datetime=desired_datetime,
-        items="\n".join(lines) if lines else "—",
+        items_block=items_block,
+        table_footer=table_footer,
     )
     can_cancel = order.status in (OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT)
     try:
