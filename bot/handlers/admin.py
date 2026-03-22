@@ -41,6 +41,7 @@ from ..keyboards.kb import (
 from ..services.bot_status import build_bot_status_html
 from ..services.catalog_sync import sync_catalog_from_opencart
 from ..utils import get_db_from_callback, get_db_from_message, is_admin, normalize_phone
+from ..utils.admin_ui import delete_tracked_admin_messages, track_admin_messages
 
 TEXTS: dict[str, str] = {
     "not_admin": "⛔ У вас нет доступа к админ-панели.",
@@ -148,6 +149,93 @@ TEXTS: dict[str, str] = {
 router = Router(name="admin")
 
 
+async def _show_admin_orders_screen(message: Message, *, user_id: int) -> None:
+    """Показывает экран управления заказами (reply + список с инлайн-кнопками), заменяя предыдущий слот.
+
+    Args:
+        message (Message): Чат и контекст отправки (в т.ч. сообщение бота из callback).
+        user_id (int): Telegram ID администратора.
+
+    Returns:
+        None: Ничего не возвращает.
+    """
+
+    if not is_admin(user_id, message.bot):
+        return
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
+    db = get_db_from_message(message)
+    total = db.count_orders()
+    page = 0
+    orders = db.list_orders_page(limit=RECENT_ORDERS_LIMIT, offset=page * RECENT_ORDERS_LIMIT)
+    reply_kb = build_admin_orders_reply_keyboard()
+    m1 = await message.answer(
+        "Управление заказами:",
+        reply_markup=reply_kb,
+    )
+    ids: list[int] = [m1.message_id]
+    if orders:
+        m2 = await message.answer(
+            TEXTS["orders_header"],
+            reply_markup=build_admin_orders_keyboard(
+                orders=orders,
+                page=page,
+                page_size=RECENT_ORDERS_LIMIT,
+                total_count=total,
+            ),
+        )
+    else:
+        m2 = await message.answer(TEXTS["orders_header"] + "\n\nПока нет заказов.")
+    ids.append(m2.message_id)
+    track_admin_messages(bot, chat_id, ids)
+
+
+async def _show_export_orders_prompt(message: Message, *, user_id: int) -> None:
+    """Показывает запрос периода выгрузки CSV (один экран в слоте админки).
+
+    Args:
+        message (Message): Сообщение-триггер.
+        user_id (int): Telegram ID администратора.
+
+    Returns:
+        None: Ничего не возвращает.
+    """
+
+    if not is_admin(user_id, message.bot):
+        return
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
+    msg = await message.answer(
+        TEXTS["export_orders_prompt"],
+        reply_markup=build_export_orders_period_keyboard(),
+    )
+    track_admin_messages(bot, chat_id, [msg.message_id])
+
+
+async def _show_main_menu_after_back(message: Message, *, user_id: int) -> None:
+    """Возвращает в главное меню админа, заменяя отслеживаемые сообщения одним ответом.
+
+    Args:
+        message (Message): Сообщение пользователя.
+        user_id (int): Telegram ID пользователя.
+
+    Returns:
+        None: Ничего не возвращает.
+    """
+
+    is_admin_flag = is_admin(user_id, message.bot)
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
+    msg = await message.answer(
+        "🏠 Главное меню.",
+        reply_markup=build_main_menu_keyboard(is_admin=is_admin_flag),
+    )
+    track_admin_messages(bot, chat_id, [msg.message_id])
+
+
 def _format_catalog_summary(summary: list[tuple[str, int]]) -> str:
     """Форматирует сводку синхронизации каталога: категория → количество товаров.
 
@@ -211,8 +299,10 @@ async def handle_admin_orders_search_start(
     if message.from_user is None or not _is_superadmin(message.from_user.id, message.bot):
         return
 
+    await delete_tracked_admin_messages(message.bot, message.chat.id)
     await state.set_state(AdminOrderSearchForm.query)
-    await message.answer(TEXTS["orders_search_prompt"])
+    msg = await message.answer(TEXTS["orders_search_prompt"])
+    track_admin_messages(message.bot, message.chat.id, [msg.message_id])
 
 
 def _refresh_bot_admin_ids(bot: Bot, db: Database) -> None:
@@ -374,53 +464,40 @@ async def handle_admin_entry(message: Message) -> None:
     Returns:
         None: Ничего не возвращает.
     """
-    if not is_admin(message.from_user.id, message.bot):
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         await message.answer(TEXTS["not_admin"])
         return
 
-    await message.answer(
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
+    msg = await message.answer(
         TEXTS["entry"],
         reply_markup=build_main_menu_keyboard(is_admin=True),
     )
+    track_admin_messages(bot, chat_id, [msg.message_id])
 
 
 @router.message(F.text == KB_TEXTS["menu_orders"])
 async def handle_admin_orders_message(message: Message) -> None:
     """Показ списка заказов по кнопке «Заказы» в меню админа."""
-    if not is_admin(message.from_user.id, message.bot):
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
-    db = get_db_from_message(message)
-    total = db.count_orders()
-    page = 0
-    orders = db.list_orders_page(limit=RECENT_ORDERS_LIMIT, offset=page * RECENT_ORDERS_LIMIT)
-    # Нижняя клавиатура с поиском и фильтрами
-    await message.answer(
-        "Управление заказами:",
-        reply_markup=build_admin_orders_reply_keyboard(),
-    )
-    # Отдельным сообщением показываем список последних заказов с инлайн-кнопками
-    if orders:
-        await message.answer(
-            TEXTS["orders_header"],
-            reply_markup=build_admin_orders_keyboard(
-                orders=orders,
-                page=page,
-                page_size=RECENT_ORDERS_LIMIT,
-                total_count=total,
-            ),
-        )
-    else:
-        await message.answer(TEXTS["orders_header"] + "\n\nПока нет заказов.")
+    await _show_admin_orders_screen(message, user_id=message.from_user.id)
 
 
 @router.message(F.text == KB_TEXTS["menu_stats"])
 async def handle_admin_stats_message(message: Message) -> None:
     """Показ статистики по кнопке «Статистика» в меню админа."""
-    if not is_admin(message.from_user.id, message.bot):
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
     db = get_db_from_message(message)
     text = _format_stats_detailed(db)
-    await message.answer(text=text, parse_mode="HTML")
+    msg = await message.answer(text=text, parse_mode="HTML")
+    track_admin_messages(bot, chat_id, [msg.message_id])
 
 
 @router.message(F.text == KB_TEXTS["menu_broadcast"])
@@ -429,24 +506,32 @@ async def handle_admin_broadcast_message(
     state: FSMContext,
 ) -> None:
     """Старт рассылки по кнопке «Рассылка» в меню админа."""
-    if not is_admin(message.from_user.id, message.bot):
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
     await state.set_state(BroadcastForm.content)
-    await message.answer(
+    msg = await message.answer(
         TEXTS["broadcast_prompt"],
         reply_markup=_build_broadcast_cancel_keyboard(),
     )
+    track_admin_messages(bot, chat_id, [msg.message_id])
 
 
 @router.message(F.text == KB_TEXTS["menu_more"])
 async def handle_admin_more_message(message: Message) -> None:
     """Меняет нижнее меню на дополнительные действия по кнопке «Ещё»."""
-    if not is_admin(message.from_user.id, message.bot):
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
-    await message.answer(
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
+    msg = await message.answer(
         "Дополнительные действия:",
         reply_markup=build_admin_more_reply_keyboard(),
     )
+    track_admin_messages(bot, chat_id, [msg.message_id])
 
 
 @router.message(F.text == KB_TEXTS["menu_admin_contact"])
@@ -460,8 +545,12 @@ async def handle_admin_contact_message(
     db = get_db_from_message(message)
     contacts = db.get_admin_contacts()
     await state.set_state(AdminContactForm.contact)
-    await message.answer(_format_admin_contacts_list(contacts))
-    await message.answer(TEXTS["contact_edit_prompt"])
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
+    m1 = await message.answer(_format_admin_contacts_list(contacts))
+    m2 = await message.answer(TEXTS["contact_edit_prompt"])
+    track_admin_messages(bot, chat_id, [m1.message_id, m2.message_id])
 
 
 @router.message(F.text == KB_TEXTS["menu_sync_catalog"])
@@ -470,16 +559,21 @@ async def handle_admin_sync_catalog_message(message: Message) -> None:
     if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
     db = get_db_from_message(message)
-    await message.answer(TEXTS["sync_catalog_start"])
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
+    m1 = await message.answer(TEXTS["sync_catalog_start"])
     try:
         summary = await sync_catalog_from_opencart(db)
         summary_text = _format_catalog_summary(summary)
-        await message.answer(TEXTS["sync_catalog_ok"].format(summary=summary_text))
+        m2 = await message.answer(TEXTS["sync_catalog_ok"].format(summary=summary_text))
+        track_admin_messages(bot, chat_id, [m1.message_id, m2.message_id])
     except Exception as e:
         logger.exception("Ошибка синхронизации каталога по запросу админа")
-        await message.answer(
+        m2 = await message.answer(
             TEXTS["sync_catalog_fail"].format(error=str(e)),
         )
+        track_admin_messages(bot, chat_id, [m1.message_id, m2.message_id])
 
 
 @router.message(F.text == KB_TEXTS["menu_users"])
@@ -487,12 +581,16 @@ async def handle_admin_users_message(message: Message) -> None:
     """Показывает список пользователей по кнопке «Пользователи» в нижнем меню."""
     if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
     db = get_db_from_message(message)
     total = db.count_users()
     limit = 50
     users = db.list_users(limit=limit)
     text = _format_users_message(users, total, limit)
-    await message.answer(text)
+    msg = await message.answer(text)
+    track_admin_messages(bot, chat_id, [msg.message_id])
 
 
 @router.message(F.text == KB_TEXTS["menu_bot_status"])
@@ -507,12 +605,17 @@ async def handle_admin_bot_status_message(message: Message) -> None:
     """
     if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
     try:
         html = await build_bot_status_html()
-        await message.answer(html, parse_mode="HTML")
+        msg = await message.answer(html, parse_mode="HTML")
+        track_admin_messages(bot, chat_id, [msg.message_id])
     except Exception:
         logger.exception("Ошибка при формировании статуса бота для админа")
-        await message.answer(TEXTS["bot_status_error"])
+        msg = await message.answer(TEXTS["bot_status_error"])
+        track_admin_messages(bot, chat_id, [msg.message_id])
 
 
 @router.message(F.text == KB_TEXTS["menu_admins"])
@@ -520,23 +623,25 @@ async def handle_admin_admins_message(message: Message) -> None:
     """Показывает список администраторов и кнопки добавить/удалить."""
     if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
     db = get_db_from_message(message)
     text = _format_admins_message(message.bot, db)
     can_manage = _is_superadmin(message.from_user.id, message.bot)
-    await message.answer(
+    msg = await message.answer(
         text,
         reply_markup=build_admin_admins_keyboard(can_manage=can_manage),
     )
+    track_admin_messages(bot, chat_id, [msg.message_id])
 
 
 @router.message(F.text == KB_TEXTS["back"])
 async def handle_admin_back_reply(message: Message) -> None:
     """Возврат в главное меню по кнопке «Назад» в нижнем меню (доп. действия)."""
-    is_admin_flag = message.from_user is not None and is_admin(message.from_user.id, message.bot)
-    await message.answer(
-        "🏠 Главное меню.",
-        reply_markup=build_main_menu_keyboard(is_admin=is_admin_flag),
-    )
+    if message.from_user is None:
+        return
+    await _show_main_menu_after_back(message, user_id=message.from_user.id)
 
 
 @router.message(F.text == KB_TEXTS["admin_orders_export"])
@@ -544,10 +649,7 @@ async def handle_admin_export_orders_start(message: Message) -> None:
     """Запрос периода выгрузки заказов в CSV."""
     if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         return
-    await message.answer(
-        TEXTS["export_orders_prompt"],
-        reply_markup=build_export_orders_period_keyboard(),
-    )
+    await _show_export_orders_prompt(message, user_id=message.from_user.id)
 
 
 @router.callback_query(F.data.startswith("admin:export_orders:"))
@@ -1160,30 +1262,7 @@ async def handle_admin_orders_callback(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id, callback.bot):
         return
 
-    db = get_db_from_callback(callback)
-    total = db.count_orders()
-    page = 0
-    orders = db.list_orders_page(limit=RECENT_ORDERS_LIMIT, offset=page * RECENT_ORDERS_LIMIT)
-
-    # Отдельным сообщением показываем reply-клавиатуру управления заказами
-    await callback.message.answer(
-        "Управление заказами:",
-        reply_markup=build_admin_orders_reply_keyboard(),
-    )
-
-    # И список заказов с инлайн-кнопками
-    if orders:
-        await callback.message.answer(
-            TEXTS["orders_header"],
-            reply_markup=build_admin_orders_keyboard(
-                orders=orders,
-                page=page,
-                page_size=RECENT_ORDERS_LIMIT,
-                total_count=total,
-            ),
-        )
-    else:
-        await callback.message.answer(TEXTS["orders_header"] + "\n\nПока нет заказов.")
+    await _show_admin_orders_screen(callback.message, user_id=callback.from_user.id)
 
 
 @router.callback_query(F.data == "admin:orders_search")
@@ -1210,20 +1289,125 @@ async def handle_admin_orders_search_callback(
         await callback.message.answer(TEXTS["orders_search_prompt"])
 
 
+async def _send_filtered_orders(
+    message: Message,
+    *,
+    statuses: list[OrderStatus],
+    header_text: str,
+    user_id: int | None = None,
+) -> None:
+    """Отправляет администратору список заказов по указанным статусам (один экран в слоте админки).
+
+    Args:
+        message (Message): Чат для ответа.
+        statuses (list[OrderStatus]): Фильтр по статусам.
+        header_text (str): Заголовок блока.
+        user_id (int | None): Telegram ID администратора; если None — из message.from_user.
+
+    Returns:
+        None: Ничего не возвращает.
+    """
+
+    uid = user_id if user_id is not None else (message.from_user.id if message.from_user else None)
+    if uid is None or not is_admin(uid, message.bot):
+        return
+
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
+
+    db = get_db_from_message(message)
+    summaries = db.list_orders_by_statuses(statuses=statuses)
+    text = header_text
+    if not summaries:
+        text += "\n\nПока нет заказов с таким статусом."
+
+    msg = await message.answer(
+        text=text,
+        reply_markup=build_admin_orders_keyboard(
+            orders=summaries,
+            page=0,
+            page_size=len(summaries) or 1,
+            total_count=len(summaries),
+        ),
+    )
+    track_admin_messages(bot, chat_id, [msg.message_id])
+
+
 @router.message(AdminOrderSearchForm.query)
 async def handle_admin_orders_search_query(
     message: Message,
     state: FSMContext,
 ) -> None:
-    """Обрабатывает ввод строки поиска заказа (номер или телефон) админом."""
+    """Обрабатывает ввод строки поиска или кнопки клавиатуры в разделе заказов."""
 
     if message.from_user is None or not is_admin(message.from_user.id, message.bot):
         await state.clear()
         return
 
-    raw_query = (message.text or "").strip()
+    uid = message.from_user.id
+    t = (message.text or "").strip()
+
+    # Кнопки нижней клавиатуры раздела «Заказы»: выход из режима поиска (раньше снова показывали только промпт).
+    if t == KB_TEXTS["admin_orders_new"]:
+        await state.clear()
+        await _send_filtered_orders(
+            message,
+            statuses=[
+                OrderStatus.NEW,
+                OrderStatus.AWAITING_PAYMENT,
+                OrderStatus.PROCESSING,
+                OrderStatus.ASSEMBLING,
+            ],
+            header_text=TEXTS["orders_filter_new"],
+            user_id=uid,
+        )
+        return
+    if t == KB_TEXTS["admin_orders_delivery"]:
+        await state.clear()
+        await _send_filtered_orders(
+            message,
+            statuses=[OrderStatus.COURIER],
+            header_text=TEXTS["orders_filter_delivery"],
+            user_id=uid,
+        )
+        return
+    if t == KB_TEXTS["admin_orders_paid"]:
+        await state.clear()
+        await _send_filtered_orders(
+            message,
+            statuses=[
+                OrderStatus.PAID,
+                OrderStatus.DELIVERED,
+            ],
+            header_text=TEXTS["orders_filter_paid"],
+            user_id=uid,
+        )
+        return
+    if t == KB_TEXTS["menu_orders"]:
+        await state.clear()
+        await _show_admin_orders_screen(message, user_id=uid)
+        return
+    if t == KB_TEXTS["admin_orders_export"]:
+        await state.clear()
+        await _show_export_orders_prompt(message, user_id=uid)
+        return
+    if t == KB_TEXTS["admin_orders_search"]:
+        await state.set_state(AdminOrderSearchForm.query)
+        await delete_tracked_admin_messages(message.bot, message.chat.id)
+        msg = await message.answer(TEXTS["orders_search_prompt"])
+        track_admin_messages(message.bot, message.chat.id, [msg.message_id])
+        return
+    if t == KB_TEXTS["back"]:
+        await state.clear()
+        await _show_main_menu_after_back(message, user_id=uid)
+        return
+
+    raw_query = t
     if not raw_query:
-        await message.answer(TEXTS["orders_search_prompt"])
+        await delete_tracked_admin_messages(message.bot, message.chat.id)
+        msg = await message.answer(TEXTS["orders_search_prompt"])
+        track_admin_messages(message.bot, message.chat.id, [msg.message_id])
         return
 
     db = get_db_from_message(message)
@@ -1238,25 +1422,34 @@ async def handle_admin_orders_search_query(
     else:
         # Номер заказа: 3–6 цифр (отображаемый 4‑значный номер).
         if not digits_only or not (3 <= len(digits_only) <= 6):
-            await message.answer(TEXTS["orders_search_prompt"])
+            await delete_tracked_admin_messages(message.bot, message.chat.id)
+            msg = await message.answer(TEXTS["orders_search_prompt"])
+            track_admin_messages(message.bot, message.chat.id, [msg.message_id])
             return
         try:
             display_number = int(digits_only)
         except ValueError:
-            await message.answer(TEXTS["orders_search_prompt"])
+            await delete_tracked_admin_messages(message.bot, message.chat.id)
+            msg = await message.answer(TEXTS["orders_search_prompt"])
+            track_admin_messages(message.bot, message.chat.id, [msg.message_id])
             return
         summaries = db.find_orders_by_display_number(display_order_number=display_number)
 
     await state.clear()
 
+    bot = message.bot
+    chat_id = message.chat.id
+    await delete_tracked_admin_messages(bot, chat_id)
+
     if not summaries:
-        await message.answer(
+        msg = await message.answer(
             TEXTS["orders_search_not_found"].format(query=raw_query),
             parse_mode="HTML",
         )
+        track_admin_messages(bot, chat_id, [msg.message_id])
         return
 
-    await message.answer(
+    msg = await message.answer(
         TEXTS["orders_search_results"].format(query=raw_query),
         reply_markup=build_admin_orders_keyboard(
             orders=summaries,
@@ -1266,34 +1459,7 @@ async def handle_admin_orders_search_query(
         ),
         parse_mode="HTML",
     )
-
-
-async def _send_filtered_orders(
-    message: Message,
-    *,
-    statuses: list[OrderStatus],
-    header_text: str,
-) -> None:
-    """Отправляет администратору список заказов по указанным статусам."""
-
-    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
-        return
-
-    db = get_db_from_message(message)
-    summaries = db.list_orders_by_statuses(statuses=statuses)
-    text = header_text
-    if not summaries:
-        text += "\n\nПока нет заказов с таким статусом."
-
-    await message.answer(
-        text=text,
-        reply_markup=build_admin_orders_keyboard(
-            orders=summaries,
-            page=0,
-            page_size=len(summaries) or 1,
-            total_count=len(summaries),
-        ),
-    )
+    track_admin_messages(bot, chat_id, [msg.message_id])
 
 
 @router.message(F.text == KB_TEXTS["admin_orders_new"])
