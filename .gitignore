@@ -8,6 +8,7 @@ wheels/
 .github
 .passwords.txt
 .pre-commit-config.yaml
+.доступы.txt
 
 # Virtual environments
 .venv

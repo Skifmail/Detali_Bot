@@ -6,6 +6,7 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 from dotenv import load_dotenv
@@ -92,10 +93,22 @@ async def main() -> None:
         logger.info("Синхронизация каталога пропущена (SKIP_OPENCART_SYNC)")
     db.seed_demo_catalog_if_empty()
 
-    bot = Bot(
-        token=bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
+    # При блокировке api.telegram.org (например в РФ) задайте BOT_TELEGRAM_PROXY — SOCKS5/HTTP-прокси.
+    # Пример: socks5://user:pass@host:1080 или socks5://host:1080
+    proxy_raw = (os.getenv("BOT_TELEGRAM_PROXY") or "").strip()
+    if proxy_raw:
+        logger.info("Используется прокси для Telegram Bot API (BOT_TELEGRAM_PROXY)")
+        session = AiohttpSession(proxy=proxy_raw)
+        bot = Bot(
+            token=bot_token,
+            session=session,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+    else:
+        bot = Bot(
+            token=bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
 
     dp = Dispatcher()
     admin_ids_from_env = _load_admin_ids()
