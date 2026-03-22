@@ -9,6 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
+from aiohttp import BasicAuth
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -59,6 +60,28 @@ def _load_admin_ids() -> set[int]:
     return ids
 
 
+def _telegram_proxy_for_session() -> str | tuple[str, BasicAuth] | None:
+    """Возвращает аргумент proxy для AiohttpSession или None.
+
+    Приоритет: BOT_TELEGRAM_PROXY_HOST (+ USER/PASSWORD) — пароль без проблем с символами в URL.
+    Иначе: одна строка BOT_TELEGRAM_PROXY (как в документации aiogram).
+
+    Returns:
+        Строка URL, пара (URL, BasicAuth) или None.
+    """
+    host = (os.getenv("BOT_TELEGRAM_PROXY_HOST") or "").strip()
+    if host:
+        port = (os.getenv("BOT_TELEGRAM_PROXY_PORT") or "1080").strip()
+        user = (os.getenv("BOT_TELEGRAM_PROXY_USER") or "").strip()
+        password = (os.getenv("BOT_TELEGRAM_PROXY_PASSWORD") or "").strip()
+        url = f"socks5://{host}:{port}"
+        if user:
+            return (url, BasicAuth(user, password))
+        return url
+    proxy_raw = (os.getenv("BOT_TELEGRAM_PROXY") or "").strip()
+    return proxy_raw or None
+
+
 async def main() -> None:
     """Точка входа Telegram-бота floraldetails demo.
 
@@ -93,12 +116,11 @@ async def main() -> None:
         logger.info("Синхронизация каталога пропущена (SKIP_OPENCART_SYNC)")
     db.seed_demo_catalog_if_empty()
 
-    # При блокировке api.telegram.org (например в РФ) задайте BOT_TELEGRAM_PROXY — SOCKS5/HTTP-прокси.
-    # Пример: socks5://user:pass@host:1080 или socks5://host:1080
-    proxy_raw = (os.getenv("BOT_TELEGRAM_PROXY") or "").strip()
-    if proxy_raw:
-        logger.info("Используется прокси для Telegram Bot API (BOT_TELEGRAM_PROXY)")
-        session = AiohttpSession(proxy=proxy_raw)
+    # При блокировке api.telegram.org задайте прокси (см. BOT_TELEGRAM_PROXY или BOT_TELEGRAM_PROXY_HOST).
+    proxy_arg = _telegram_proxy_for_session()
+    if proxy_arg:
+        logger.info("Используется прокси для Telegram Bot API")
+        session = AiohttpSession(proxy=proxy_arg)
         bot = Bot(
             token=bot_token,
             session=session,
