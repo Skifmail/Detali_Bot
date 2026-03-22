@@ -22,6 +22,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from loguru import logger
 
+from ..core.admin_ui import delete_tracked_admin_messages, track_admin_messages
 from ..database.db import RECENT_ORDERS_LIMIT, Database
 from ..database.models import Order, OrderStatus, User
 from ..keyboards.kb import TEXTS as KB_TEXTS
@@ -41,7 +42,6 @@ from ..keyboards.kb import (
 from ..services.bot_status import build_bot_status_html
 from ..services.catalog_sync import sync_catalog_from_opencart
 from ..utils import get_db_from_callback, get_db_from_message, is_admin, normalize_phone
-from ..utils.admin_ui import delete_tracked_admin_messages, track_admin_messages
 
 TEXTS: dict[str, str] = {
     "not_admin": "⛔ У вас нет доступа к админ-панели.",
