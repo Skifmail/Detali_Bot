@@ -38,6 +38,7 @@ from ..keyboards.kb import (
     build_export_orders_period_keyboard,
     build_main_menu_keyboard,
 )
+from ..services.bot_status import build_bot_status_html
 from ..services.catalog_sync import sync_catalog_from_opencart
 from ..utils import get_db_from_callback, get_db_from_message, is_admin, normalize_phone
 
@@ -107,6 +108,7 @@ TEXTS: dict[str, str] = {
         "Удалить можно только тех, кто добавлен через бота. SuperAdmin (это Вы) нельзя удалить через бота"
     ),
     "admins_remove_empty": "Нет администраторов, добавленных через бота. Удалять нечего.",
+    "bot_status_error": "❌ Не удалось получить статус бота. Подробности в логах сервера.",
     "orders_search_prompt": "🔍 Введите номер заказа (4 цифры) или телефон (формат +7XXXXXXXXXX или 8XXXXXXXXXX):",
     "orders_search_not_found": "По запросу <code>{query}</code> заказы не найдены.",
     "orders_search_results": "📦 Найденные заказы по запросу: <code>{query}</code>",
@@ -491,6 +493,26 @@ async def handle_admin_users_message(message: Message) -> None:
     users = db.list_users(limit=limit)
     text = _format_users_message(users, total, limit)
     await message.answer(text)
+
+
+@router.message(F.text == KB_TEXTS["menu_bot_status"])
+async def handle_admin_bot_status_message(message: Message) -> None:
+    """Показывает PID, uptime, systemd и хвост лога по кнопке «Статус бота».
+
+    Args:
+        message (Message): Входящее сообщение от администратора.
+
+    Returns:
+        None: Ничего не возвращает.
+    """
+    if message.from_user is None or not is_admin(message.from_user.id, message.bot):
+        return
+    try:
+        html = await build_bot_status_html()
+        await message.answer(html, parse_mode="HTML")
+    except Exception:
+        logger.exception("Ошибка при формировании статуса бота для админа")
+        await message.answer(TEXTS["bot_status_error"])
 
 
 @router.message(F.text == KB_TEXTS["menu_admins"])

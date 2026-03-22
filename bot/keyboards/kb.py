@@ -35,6 +35,7 @@ TEXTS: dict[str, str] = {
     "menu_sync_catalog": "🔄 Обновить каталог",
     "menu_users": "👥 Пользователи",
     "menu_admins": "👤 Администраторы",
+    "menu_bot_status": "📊 Статус бота",
     "menu_admin_contact": "📞 Контакты админов для клиентов",
     "admin_orders_search": "🔍 Найти заказ",
     "admin_orders_new": "Новые",
@@ -91,7 +92,7 @@ def build_admin_more_reply_keyboard() -> ReplyKeyboardMarkup:
 
     Returns:
         ReplyKeyboardMarkup: Клавиатура с кнопками Обновить каталог, Пользователи,
-            Контакт для клиентов, Назад.
+            Администраторы, контакты для клиентов, статус бота, Назад.
     """
     builder = ReplyKeyboardBuilder()
     builder.row(
@@ -102,6 +103,7 @@ def build_admin_more_reply_keyboard() -> ReplyKeyboardMarkup:
         KeyboardButton(text=TEXTS["menu_admins"]),
         KeyboardButton(text=TEXTS["menu_admin_contact"]),
     )
+    builder.row(KeyboardButton(text=TEXTS["menu_bot_status"]))
     builder.row(KeyboardButton(text=TEXTS["back"]))
     return builder.as_markup(resize_keyboard=True)
 

@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from .core.logging import setup_logging
+from .core.runtime_info import set_bot_started_at
 from .database.db import create_default_database
 from .handlers import account, admin, cart, catalog, contact_fallback, order, payment, start
 from .middlewares.user import UserMiddleware
@@ -90,6 +91,7 @@ async def main() -> None:
     """
 
     setup_logging()
+    set_bot_started_at()
     load_dotenv()
     # Поддержка запуска из корня проекта: дополнительно подгружаем bot/.env.
     # Переменные, уже заданные, не переопределяются (override=False по умолчанию).
