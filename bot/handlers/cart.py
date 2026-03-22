@@ -160,6 +160,8 @@ async def _update_cart_messages(
     header_kb = build_cart_keyboard(has_items=True, can_checkout=True)
 
     header_msg_id: int | None = message_ids[0] if message_ids else None
+    line_msg_ids: list[int] = message_ids[1:] if len(message_ids) > 1 else []
+
     if header_msg_id is not None:
         try:
             await callback.bot.edit_message_text(
@@ -178,6 +180,38 @@ async def _update_cart_messages(
                 )
             except TelegramBadRequest:
                 header_msg_id = None
+
+    # Та же число строк — правим текст и кнопки на месте, без удаления строк.
+    if (
+        header_msg_id is not None
+        and callback.message is not None
+        and len(items_after) == len(line_msg_ids)
+        and line_msg_ids
+    ):
+        for item, mid in zip(items_after, line_msg_ids, strict=True):
+            item_text = f"{item.product.title} — {item.product.price} ₽ × {item.quantity}"
+            try:
+                await callback.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=mid,
+                    text=item_text,
+                    reply_markup=build_cart_item_controls_keyboard(cart_item_id=item.id),
+                )
+            except TelegramBadRequest:
+                await _send_cart_to_chat(
+                    callback.bot,
+                    callback.message.chat.id,
+                    from_user,
+                    state=state,
+                )
+                await callback.answer(TEXTS["cart_updated"])
+                return
+        await state.update_data(
+            cart_message_ids=[header_msg_id, *line_msg_ids],
+            cart_chat_id=callback.message.chat.id,
+        )
+        await callback.answer(TEXTS["cart_updated"])
+        return
 
     if message_ids and chat_id is not None:
         for mid in message_ids[1:]:

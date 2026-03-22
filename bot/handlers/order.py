@@ -445,7 +445,7 @@ async def handle_checkout_start(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
-    """Запускает процесс оформления заказа: удаляет сообщения корзины и показывает первый шаг — выбор получателя.
+    """Запускает оформление: строки корзины удаляются, шапка редактируется в шаг выбора получателя.
 
     Администраторам оформление заказа недоступно.
     """
@@ -464,13 +464,6 @@ async def handle_checkout_start(
     data = await state.get_data()
     cart_message_ids: list[int] = data.get("cart_message_ids") or []
     cart_chat_id = data.get("cart_chat_id") or chat_id
-    for mid in cart_message_ids:
-        try:
-            await callback.bot.delete_message(chat_id=cart_chat_id, message_id=mid)
-        except TelegramBadRequest:
-            pass
-    if cart_message_ids:
-        await state.update_data(cart_message_ids=[], cart_chat_id=None)
 
     db = get_db_from_callback(callback)
     from_user = callback.from_user
@@ -481,6 +474,13 @@ async def handle_checkout_start(
     )
     cart_items = db.get_cart(user_id=current_user.id)
     if not cart_items:
+        for mid in cart_message_ids:
+            try:
+                await callback.bot.delete_message(chat_id=cart_chat_id, message_id=mid)
+            except TelegramBadRequest:
+                pass
+        if cart_message_ids:
+            await state.update_data(cart_message_ids=[], cart_chat_id=None)
         await callback.bot.send_message(
             chat_id=chat_id,
             text=TEXTS["empty_cart"],
@@ -521,6 +521,13 @@ async def handle_checkout_start(
                     product_id=item.product.id,
                     delta=-item.quantity,
                 )
+        for mid in cart_message_ids:
+            try:
+                await callback.bot.delete_message(chat_id=cart_chat_id, message_id=mid)
+            except TelegramBadRequest:
+                pass
+        if cart_message_ids:
+            await state.update_data(cart_message_ids=[], cart_chat_id=None)
         await callback.bot.send_message(
             chat_id=chat_id,
             text=TEXTS["cart_cleaned_no_valid"],
@@ -549,17 +556,57 @@ async def handle_checkout_start(
             last_address = last_full_order.delivery_address
 
     saved = db.list_saved_recipients(user_id=current_user.id)
+    recipient_kb = build_recipient_choice_keyboard(has_saved_recipients=len(saved) > 0)
+    recipient_text = TEXTS["ask_recipient_choice"]
+
+    checkout_shown = False
+    if cart_message_ids:
+        header_id = cart_message_ids[0]
+        for mid in cart_message_ids[1:]:
+            try:
+                await callback.bot.delete_message(chat_id=cart_chat_id, message_id=mid)
+            except TelegramBadRequest:
+                pass
+        try:
+            await callback.bot.edit_message_text(
+                chat_id=cart_chat_id,
+                message_id=header_id,
+                text=recipient_text,
+                reply_markup=recipient_kb,
+            )
+            checkout_shown = True
+        except TelegramBadRequest:
+            try:
+                await callback.bot.edit_message_caption(
+                    chat_id=cart_chat_id,
+                    message_id=header_id,
+                    caption=recipient_text,
+                    reply_markup=recipient_kb,
+                )
+                checkout_shown = True
+            except TelegramBadRequest:
+                checkout_shown = False
+        if not checkout_shown:
+            try:
+                await callback.bot.delete_message(chat_id=cart_chat_id, message_id=header_id)
+            except TelegramBadRequest:
+                pass
+
     await state.update_data(
         user_db_id=current_user.id,
         last_address=last_address,
         suggested_address=last_address,
+        cart_message_ids=[],
+        cart_chat_id=None,
     )
     await state.set_state(OrderForm.recipient_choice)
-    await callback.bot.send_message(
-        chat_id=chat_id,
-        text=TEXTS["ask_recipient_choice"],
-        reply_markup=build_recipient_choice_keyboard(has_saved_recipients=len(saved) > 0),
-    )
+
+    if not checkout_shown:
+        await callback.bot.send_message(
+            chat_id=chat_id,
+            text=recipient_text,
+            reply_markup=recipient_kb,
+        )
 
 
 @router.callback_query(

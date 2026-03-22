@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import dataclass
 from typing import Final
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InputMediaPhoto, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InputMediaPhoto, Message
 from loguru import logger
 
 from ..database.db import Database
@@ -36,6 +37,130 @@ PAGE_SIZE: Final[int] = 3
 CAPTION_MAX_LENGTH: Final[int] = 1024
 
 router = Router(name="catalog")
+
+
+@dataclass(frozen=True)
+class ProductsPagePayload:
+    """Данные для отрисовки страницы товаров категории (без отправки в чат).
+
+    Attributes:
+        photos: Список пар (URL превью, подпись).
+        choose_text: Текст сообщения с кнопками выбора товара.
+        keyboard: Inline-клавиатура страницы.
+    """
+
+    photos: list[tuple[str, str]]
+    choose_text: str
+    keyboard: InlineKeyboardMarkup
+
+
+def _build_products_page_payload(
+    db: Database,
+    category_id: int,
+    page: int,
+) -> ProductsPagePayload | None:
+    """Собирает текст, клавиатуру и превью для страницы категории без I/O.
+
+    Args:
+        db (Database): База данных бота.
+        category_id (int): Идентификатор категории.
+        page (int): Номер страницы (с нуля).
+
+    Returns:
+        ProductsPagePayload | None: Данные страницы или None, если товаров в категории нет.
+    """
+
+    total_count = db.count_products_in_category(category_id=category_id)
+    if total_count == 0:
+        return None
+
+    offset = page * PAGE_SIZE
+    products = db.list_products_by_category(
+        category_id=category_id,
+        limit=PAGE_SIZE,
+        offset=offset,
+    )
+    products_list = list(products)
+    keyboard = build_products_grid_page_keyboard(
+        products_list,
+        category_id=category_id,
+        page=page,
+        page_size=PAGE_SIZE,
+        total_count=total_count,
+    )
+
+    photos_with_captions: list[tuple[str, str]] = []
+    for idx, p in enumerate(products_list, start=1):
+        photo_url = (p.image_url or "").strip()
+        if not photo_url:
+            continue
+        title_clean = _clean_title(p.title)
+        photos_with_captions.append(
+            (
+                photo_url,
+                TEXTS["product_preview_caption"].format(
+                    title=f"{idx}. {title_clean}",
+                    price=p.price,
+                ),
+            ),
+        )
+    items_lines = [f"{i}. {_clean_title(p.title)} — {p.price} ₽" for i, p in enumerate(products_list, start=1)]
+    items_block = "\n".join(items_lines)
+    choose_text = TEXTS["catalog_choose_product_no_photos"].format(items=items_block)
+    if photos_with_captions:
+        choose_text = TEXTS["catalog_choose_product"] + "\n\n" + items_block
+
+    return ProductsPagePayload(
+        photos=photos_with_captions,
+        choose_text=choose_text,
+        keyboard=keyboard,
+    )
+
+
+async def _edit_catalog_text_message(
+    bot: Bot,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+    *,
+    parse_mode: str | None = None,
+) -> bool:
+    """Редактирует текст или подпись сообщения каталога (одно сообщение с клавиатурой).
+
+    Args:
+        bot (Bot): Экземпляр бота.
+        chat_id (int): ID чата.
+        message_id (int): ID сообщения.
+        text (str): Новый текст или подпись.
+        keyboard (InlineKeyboardMarkup): Клавиатура.
+        parse_mode (str | None): Режим разбора (например HTML) или None.
+
+    Returns:
+        bool: True, если редактирование выполнено успешно.
+    """
+
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=keyboard,
+            parse_mode=parse_mode,
+        )
+        return True
+    except TelegramBadRequest:
+        try:
+            await bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=text,
+                reply_markup=keyboard,
+                parse_mode=parse_mode,
+            )
+            return True
+        except TelegramBadRequest:
+            return False
 
 
 def _strip_html(html_text: str, max_length: int = CAPTION_MAX_LENGTH) -> str:
@@ -121,9 +246,8 @@ async def _render_products_page(
     Returns:
         list[int]: Список отправленных message_id (сначала медиа, затем текст).
     """
-    total_count = db.count_products_in_category(category_id=category_id)
-
-    if total_count == 0:
+    built = _build_products_page_payload(db, category_id, page)
+    if built is None:
         keyboard = build_categories_keyboard(categories=db.list_categories())
         await bot.send_message(
             chat_id=chat_id,
@@ -132,47 +256,12 @@ async def _render_products_page(
         )
         return []
 
-    offset = page * PAGE_SIZE
-    products = db.list_products_by_category(
-        category_id=category_id,
-        limit=PAGE_SIZE,
-        offset=offset,
-    )
-    products_list = list(products)
-    keyboard = build_products_grid_page_keyboard(
-        products_list,
-        category_id=category_id,
-        page=page,
-        page_size=PAGE_SIZE,
-        total_count=total_count,
-    )
-
-    # Фото товаров берутся с сайта (image_url при загрузке каталога из OpenCart).
-    photos_with_captions = []
-    for idx, p in enumerate(products_list, start=1):
-        photo_url = (p.image_url or "").strip()
-        if not photo_url:
-            continue
-        title_clean = _clean_title(p.title)
-        photos_with_captions.append(
-            (
-                photo_url,
-                TEXTS["product_preview_caption"].format(
-                    title=f"{idx}. {title_clean}",
-                    price=p.price,
-                ),
-            ),
-        )
     message_ids: list[int] = []
-    items_lines = [f"{i}. {_clean_title(p.title)} — {p.price} ₽" for i, p in enumerate(products_list, start=1)]
-    items_block = "\n".join(items_lines)
-    choose_text = TEXTS["catalog_choose_product_no_photos"].format(items=items_block)
-    if photos_with_captions:
-        media = [InputMediaPhoto(type="photo", media=ph, caption=cap) for ph, cap in photos_with_captions]
+    if built.photos:
+        media = [InputMediaPhoto(type="photo", media=ph, caption=cap) for ph, cap in built.photos]
         try:
             sent = await bot.send_media_group(chat_id=chat_id, media=media)
             message_ids = [m.message_id for m in sent]
-            choose_text = TEXTS["catalog_choose_product"] + "\n\n" + items_block
         except TelegramBadRequest as e:
             logger.warning(
                 "Не удалось отправить медиа-группу категории category_id={}: {}",
@@ -182,8 +271,8 @@ async def _render_products_page(
 
     text_msg = await bot.send_message(
         chat_id=chat_id,
-        text=choose_text,
-        reply_markup=keyboard,
+        text=built.choose_text,
+        reply_markup=built.keyboard,
     )
     message_ids.append(text_msg.message_id)
 
@@ -389,13 +478,55 @@ async def handle_category_selected(
     chat_id = callback.message.chat.id
     _, category_id_str = callback.data.split(":", maxsplit=1)
     category_id = int(category_id_str)
-    # Удаляем сообщение с категориями и показываем первую страницу товаров.
+
+    db: Database = callback.bot.db
+    built = _build_products_page_payload(db, category_id, 0)
+    if built is None:
+        keyboard = build_categories_keyboard(categories=db.list_categories())
+        await callback.bot.send_message(
+            chat_id=chat_id,
+            text=TEXTS["no_products"],
+            reply_markup=keyboard,
+        )
+        return
+
+    # Без превью — превращаем сообщение со списком категорий в страницу товаров (без удаления).
+    if not built.photos:
+        ok = await _edit_catalog_text_message(
+            callback.bot,
+            chat_id,
+            callback.message.message_id,
+            built.choose_text,
+            built.keyboard,
+            parse_mode=None,
+        )
+        if ok:
+            await state.update_data(
+                catalog_message_ids=[callback.message.message_id],
+                catalog_chat_id=chat_id,
+                catalog_category_id=category_id,
+                catalog_page=0,
+            )
+            return
+        try:
+            await callback.message.delete()
+        except (TelegramBadRequest, TelegramNetworkError):
+            pass
+        await _render_products_page(
+            bot=callback.bot,
+            chat_id=chat_id,
+            db=db,
+            category_id=category_id,
+            page=0,
+            state=state,
+        )
+        return
+
     try:
         await callback.message.delete()
     except (TelegramBadRequest, TelegramNetworkError):
         pass
 
-    db: Database = callback.bot.db
     await _render_products_page(
         bot=callback.bot,
         chat_id=chat_id,
@@ -429,14 +560,145 @@ async def handle_products_page(
     _, category_id_str, page_str = callback.data.split(":", maxsplit=2)
     category_id = int(category_id_str)
     page = int(page_str)
-    # Удаляем старые сообщения страницы и отрисовываем её заново.
+
+    db: Database = callback.bot.db
+    built = _build_products_page_payload(db, category_id, page)
+    if built is None:
+        keyboard = build_categories_keyboard(categories=db.list_categories())
+        await callback.bot.send_message(
+            chat_id=chat_id,
+            text=TEXTS["no_products"],
+            reply_markup=keyboard,
+        )
+        return
+
+    if not old_ids:
+        await _render_products_page(
+            bot=callback.bot,
+            chat_id=chat_id,
+            db=db,
+            category_id=category_id,
+            page=page,
+            state=state,
+        )
+        return
+
+    text_id = old_ids[-1]
+    media_ids = old_ids[:-1]
+    photos = built.photos
+
+    # Только текст (нет превью и не было медиа-сообщений) — одно редактирование.
+    if not photos and not media_ids:
+        if await _edit_catalog_text_message(
+            callback.bot,
+            chat_id,
+            text_id,
+            built.choose_text,
+            built.keyboard,
+            parse_mode=None,
+        ):
+            await state.update_data(
+                catalog_page=page,
+                catalog_category_id=category_id,
+                catalog_chat_id=chat_id,
+            )
+        return
+
+    # Раньше были фото, на этой странице превью нет — удаляем только картинки, текст правим.
+    if not photos and media_ids:
+        for mid in media_ids:
+            try:
+                await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
+            except (TelegramBadRequest, TelegramNetworkError, TypeError):
+                continue
+        if await _edit_catalog_text_message(
+            callback.bot,
+            chat_id,
+            text_id,
+            built.choose_text,
+            built.keyboard,
+            parse_mode=None,
+        ):
+            await state.update_data(
+                catalog_message_ids=[text_id],
+                catalog_category_id=category_id,
+                catalog_page=page,
+                catalog_chat_id=chat_id,
+            )
+        return
+
+    # Появились превью, а раньше их не было — порядок сообщений иначе; пересобираем страницу.
+    if photos and not media_ids:
+        try:
+            await callback.bot.delete_message(chat_id=chat_id, message_id=text_id)
+        except (TelegramBadRequest, TelegramNetworkError, TypeError):
+            pass
+        await _render_products_page(
+            bot=callback.bot,
+            chat_id=chat_id,
+            db=db,
+            category_id=category_id,
+            page=page,
+            state=state,
+        )
+        return
+
+    # Совпадает число превью — правим подписи/медиа и нижнее сообщение без полного сброса.
+    if len(photos) == len(media_ids):
+        text_ok = await _edit_catalog_text_message(
+            callback.bot,
+            chat_id,
+            text_id,
+            built.choose_text,
+            built.keyboard,
+            parse_mode=None,
+        )
+        if not text_ok:
+            for mid in old_ids:
+                try:
+                    await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
+                except (TelegramBadRequest, TelegramNetworkError, TypeError):
+                    continue
+            await _render_products_page(
+                bot=callback.bot,
+                chat_id=chat_id,
+                db=db,
+                category_id=category_id,
+                page=page,
+                state=state,
+            )
+            return
+        for (url, cap), mid in zip(photos, media_ids, strict=True):
+            try:
+                await callback.bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=mid,
+                    media=InputMediaPhoto(
+                        media=url,
+                        caption=cap,
+                        parse_mode="HTML",
+                    ),
+                )
+            except TelegramBadRequest as e:
+                logger.warning(
+                    "Не удалось обновить превью каталога message_id={}: {}",
+                    mid,
+                    e,
+                )
+        await state.update_data(
+            catalog_message_ids=media_ids + [text_id],
+            catalog_category_id=category_id,
+            catalog_page=page,
+            catalog_chat_id=chat_id,
+        )
+        return
+
+    # Разное число слотов превью — надёжный fallback: удалить и отправить заново.
     for mid in old_ids:
         try:
             await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
         except (TelegramBadRequest, TelegramNetworkError, TypeError):
             continue
-
-    db: Database = callback.bot.db
     await _render_products_page(
         bot=callback.bot,
         chat_id=chat_id,
@@ -474,7 +736,10 @@ async def handle_product_selected(
     data = await state.get_data()
     message_ids: list[int] = data.get("catalog_message_ids") or []
     chat_id = data.get("catalog_chat_id") or callback.message.chat.id
-    for mid in message_ids:
+    text_id = callback.message.message_id
+    media_ids = [mid for mid in message_ids if mid != text_id]
+
+    for mid in media_ids:
         try:
             await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
         except (TelegramBadRequest, TelegramNetworkError, TypeError):
@@ -489,4 +754,52 @@ async def handle_product_selected(
         await callback.message.answer("К сожалению, этот товар больше недоступен.")
         return
 
-    await _send_product_card(callback=callback, product=product)
+    keyboard = build_product_actions_keyboard(product_id=product.id)
+    title_clean = _clean_title(product.title)
+    description_clean = _strip_html(product.description, max_length=2000)
+    caption = TEXTS["product_card"].format(
+        title=title_clean,
+        description=description_clean,
+        price=product.price,
+    )
+    if len(caption) > CAPTION_MAX_LENGTH:
+        caption = caption[: CAPTION_MAX_LENGTH - 3].rstrip() + "..."
+
+    photo_url = product.image_url.strip() if product.image_url else None
+    if photo_url:
+        try:
+            await callback.bot.delete_message(chat_id=chat_id, message_id=text_id)
+        except (TelegramBadRequest, TelegramNetworkError, TypeError):
+            pass
+        try:
+            await callback.bot.send_photo(
+                chat_id=chat_id,
+                photo=photo_url,
+                caption=caption,
+                reply_markup=keyboard,
+            )
+        except TelegramBadRequest as e:
+            logger.warning(
+                "Не удалось загрузить изображение товара product_id={} ({})",
+                product.id,
+                e,
+            )
+            caption_plain = _strip_html(caption, max_length=CAPTION_MAX_LENGTH)
+            await callback.bot.send_message(
+                chat_id=chat_id,
+                text=caption_plain + "\n\n(Изображение временно недоступно.)",
+                reply_markup=keyboard,
+                parse_mode=None,
+            )
+        return
+
+    ok = await _edit_catalog_text_message(
+        callback.bot,
+        chat_id,
+        text_id,
+        caption,
+        keyboard,
+        parse_mode="HTML",
+    )
+    if not ok:
+        await _send_product_card(callback=callback, product=product)
