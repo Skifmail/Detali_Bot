@@ -1239,20 +1239,14 @@ async def handle_nav_back_main(callback: CallbackQuery) -> None:
         return
     is_admin_flag = callback.from_user.id in getattr(callback.bot, "admin_ids", set())
     try:
-        await callback.message.edit_text(
-            text="🏠 Главное меню.",
-            reply_markup=build_main_menu_keyboard(is_admin=is_admin_flag),
-        )
+        await callback.message.delete()
     except TelegramBadRequest:
-        try:
-            await callback.message.delete()
-        except TelegramBadRequest:
-            pass
-        await callback.bot.send_message(
-            chat_id=callback.message.chat.id,
-            text="🏠 Главное меню.",
-            reply_markup=build_main_menu_keyboard(is_admin=is_admin_flag),
-        )
+        pass
+    await callback.bot.send_message(
+        chat_id=callback.message.chat.id,
+        text="🏠 Главное меню.",
+        reply_markup=build_main_menu_keyboard(is_admin=is_admin_flag),
+    )
 
 
 @router.callback_query(F.data == "admin:back")
