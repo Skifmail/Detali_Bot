@@ -136,15 +136,23 @@ async def _start_yookassa_payment(message: Message, order_id: int) -> None:
         display_number=order.display_order_number,
         total=order.total_amount,
     )
-    await message.answer(
-        intro_text,
-        reply_markup=build_payment_keyboard(
-            amount=order.total_amount,
-            order_id=order.id,
-            confirmation_url=confirmation_url,
-        ),
-        parse_mode="HTML",
+    keyboard = build_payment_keyboard(
+        amount=order.total_amount,
+        order_id=order.id,
+        confirmation_url=confirmation_url,
     )
+    try:
+        await message.edit_text(
+            intro_text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest:
+        await message.answer(
+            intro_text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
 
 
 @router.callback_query(F.data.startswith("payment:method:yookassa:"))
@@ -224,7 +232,10 @@ async def handle_payment_method_cash(callback: CallbackQuery) -> None:
     )
     if updated.delivery_address == "Самовывоз":
         text += TEXTS["success_pickup"].format(address=PICKUP_ADDRESS_DISPLAY)
-    await callback.message.answer(text, parse_mode="HTML")
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML")
+    except TelegramBadRequest:
+        await callback.message.answer(text, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("payment:pay:"))
@@ -251,9 +262,11 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось найти заказ для оплаты.")
         return
 
-    await callback.message.answer(TEXTS["processing"])
+    try:
+        await callback.message.edit_text(TEXTS["processing"])
+    except TelegramBadRequest:
+        await callback.message.answer(TEXTS["processing"])
 
-    # Если способ оплаты не был выбран ранее (редкий кейс), фиксируем «yookassa» для отчётов.
     if not (order_before.payment_method or "").strip():
         db.update_order_payment_method(order_id=order_id, payment_method="yookassa")
 
@@ -261,7 +274,10 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
 
     updated = db.update_order_status(order_id=order_id, new_status=OrderStatus.PAID)
     if updated is None:
-        await callback.message.answer("Не удалось обновить статус заказа после оплаты.")
+        try:
+            await callback.message.edit_text("Не удалось обновить статус заказа после оплаты.")
+        except TelegramBadRequest:
+            await callback.message.answer("Не удалось обновить статус заказа после оплаты.")
         return
 
     from ..services.opencart_order import add_payment_confirmation_to_opencart, create_order_in_opencart
@@ -284,4 +300,7 @@ async def handle_mock_payment(callback: CallbackQuery) -> None:
     )
     if updated.delivery_address == "Самовывоз":
         success_text += TEXTS["success_pickup"].format(address=PICKUP_ADDRESS_DISPLAY)
-    await callback.message.answer(success_text, parse_mode="HTML")
+    try:
+        await callback.message.edit_text(success_text, parse_mode="HTML")
+    except TelegramBadRequest:
+        await callback.message.answer(success_text, parse_mode="HTML")

@@ -135,11 +135,27 @@ async def _update_cart_messages(
 
     if not items_after:
         if message_ids and chat_id is not None:
-            for mid in message_ids:
+            header_mid = message_ids[0]
+            for mid in message_ids[1:]:
                 try:
                     await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
                 except TelegramBadRequest:
                     continue
+            try:
+                await callback.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=header_mid,
+                    text=TEXTS["empty_cart"],
+                )
+            except TelegramBadRequest:
+                try:
+                    await callback.bot.delete_message(chat_id=chat_id, message_id=header_mid)
+                except TelegramBadRequest:
+                    pass
+                if callback.message is not None:
+                    await callback.message.answer(TEXTS["empty_cart"])
+        elif callback.message is not None:
+            await callback.message.answer(TEXTS["empty_cart"])
         await state.clear()
         await callback.answer(TEXTS["cart_updated"])
         return
@@ -288,6 +304,18 @@ async def handle_cart_entry(message: Message, state: FSMContext) -> None:
             reply_markup=build_main_menu_keyboard(is_admin=True),
         )
         return
+
+    data = await state.get_data()
+    old_ids: list[int] = data.get("cart_message_ids") or []
+    old_chat: int | None = data.get("cart_chat_id")
+    if old_ids and old_chat is not None:
+        for mid in old_ids:
+            try:
+                await message.bot.delete_message(chat_id=old_chat, message_id=mid)
+            except TelegramBadRequest:
+                continue
+        await state.update_data(cart_message_ids=[], cart_chat_id=None)
+
     await _show_cart(message, state=state)
 
 
@@ -323,43 +351,7 @@ async def handle_add_to_cart(
         last_name=from_user.last_name,
     )
     db.add_to_cart(user_id=current_user.id, product_id=product_id, delta=1)
-    await callback.answer("✅ Товар добавлен в корзину.")
-
-    if callback.message is None:
-        return
-    items = db.get_cart(user_id=current_user.id)
-    if not items:
-        return
-    lines_text, total = _render_cart_lines(items)
-    text = TEXTS["cart_header"].format(lines=lines_text, total=total)
-    keyboard = build_cart_keyboard(has_items=True, can_checkout=True)
-    try:
-        await callback.message.edit_text(text, reply_markup=keyboard)
-    except TelegramBadRequest:
-        try:
-            await callback.message.edit_caption(caption=text, reply_markup=keyboard)
-        except TelegramBadRequest:
-            await callback.message.delete()
-            await _send_cart_to_chat(
-                callback.bot,
-                callback.message.chat.id,
-                from_user,
-                state=state,
-            )
-            return
-    message_ids: list[int] = [callback.message.message_id]
-    for item in items:
-        item_text = f"{item.product.title} — {item.product.price} ₽ × {item.quantity}"
-        msg = await callback.bot.send_message(
-            chat_id=callback.message.chat.id,
-            text=item_text,
-            reply_markup=build_cart_item_controls_keyboard(cart_item_id=item.id),
-        )
-        message_ids.append(msg.message_id)
-    await state.update_data(
-        cart_message_ids=message_ids,
-        cart_chat_id=callback.message.chat.id,
-    )
+    await callback.answer("✅ Товар добавлен в корзину.", show_alert=False)
 
 
 @router.callback_query(CartItemCallback.filter())

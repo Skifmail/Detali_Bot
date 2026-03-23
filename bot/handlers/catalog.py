@@ -522,18 +522,47 @@ async def handle_category_selected(
         )
         return
 
+    media = [InputMediaPhoto(type="photo", media=ph, caption=cap) for ph, cap in built.photos]
+    media_ids: list[int] = []
     try:
-        await callback.message.delete()
-    except (TelegramBadRequest, TelegramNetworkError):
-        pass
+        sent = await callback.bot.send_media_group(chat_id=chat_id, media=media)
+        media_ids = [m.message_id for m in sent]
+    except TelegramBadRequest as e:
+        logger.warning(
+            "Не удалось отправить медиа-группу категории category_id={}: {}",
+            category_id,
+            e,
+        )
 
-    await _render_products_page(
-        bot=callback.bot,
-        chat_id=chat_id,
-        db=db,
-        category_id=category_id,
-        page=0,
-        state=state,
+    ok = await _edit_catalog_text_message(
+        callback.bot,
+        chat_id,
+        callback.message.message_id,
+        built.choose_text,
+        built.keyboard,
+        parse_mode=None,
+    )
+    text_msg_id: int
+    if ok:
+        text_msg_id = callback.message.message_id
+    else:
+        try:
+            await callback.message.delete()
+        except (TelegramBadRequest, TelegramNetworkError):
+            pass
+        text_msg = await callback.bot.send_message(
+            chat_id=chat_id,
+            text=built.choose_text,
+            reply_markup=built.keyboard,
+        )
+        text_msg_id = text_msg.message_id
+
+    all_ids = media_ids + [text_msg_id]
+    await state.update_data(
+        catalog_message_ids=all_ids,
+        catalog_chat_id=chat_id,
+        catalog_category_id=category_id,
+        catalog_page=0,
     )
 
 
@@ -627,19 +656,46 @@ async def handle_products_page(
             )
         return
 
-    # Появились превью, а раньше их не было — порядок сообщений иначе; пересобираем страницу.
+    # Появились превью, а раньше их не было — досылаем медиа, текст редактируем.
     if photos and not media_ids:
+        media = [InputMediaPhoto(type="photo", media=ph, caption=cap) for ph, cap in photos]
+        new_media_ids: list[int] = []
         try:
-            await callback.bot.delete_message(chat_id=chat_id, message_id=text_id)
-        except (TelegramBadRequest, TelegramNetworkError, TypeError):
-            pass
-        await _render_products_page(
-            bot=callback.bot,
-            chat_id=chat_id,
-            db=db,
-            category_id=category_id,
-            page=page,
-            state=state,
+            sent = await callback.bot.send_media_group(chat_id=chat_id, media=media)
+            new_media_ids = [m.message_id for m in sent]
+        except TelegramBadRequest as e:
+            logger.warning(
+                "Не удалось отправить медиа-группу категории category_id={}: {}",
+                category_id,
+                e,
+            )
+
+        text_ok = await _edit_catalog_text_message(
+            callback.bot,
+            chat_id,
+            text_id,
+            built.choose_text,
+            built.keyboard,
+            parse_mode=None,
+        )
+        final_text_id = text_id
+        if not text_ok:
+            try:
+                await callback.bot.delete_message(chat_id=chat_id, message_id=text_id)
+            except (TelegramBadRequest, TelegramNetworkError, TypeError):
+                pass
+            text_msg = await callback.bot.send_message(
+                chat_id=chat_id,
+                text=built.choose_text,
+                reply_markup=built.keyboard,
+            )
+            final_text_id = text_msg.message_id
+
+        await state.update_data(
+            catalog_message_ids=new_media_ids + [final_text_id],
+            catalog_category_id=category_id,
+            catalog_page=page,
+            catalog_chat_id=chat_id,
         )
         return
 
@@ -693,19 +749,69 @@ async def handle_products_page(
         )
         return
 
-    # Разное число слотов превью — надёжный fallback: удалить и отправить заново.
-    for mid in old_ids:
+    # Разное число слотов превью — редактируем текст, обновляем совпадающие медиа,
+    # лишние удаляем, недостающие досылаем.
+    text_ok = await _edit_catalog_text_message(
+        callback.bot,
+        chat_id,
+        text_id,
+        built.choose_text,
+        built.keyboard,
+        parse_mode=None,
+    )
+    final_text_id = text_id
+    if not text_ok:
+        try:
+            await callback.bot.delete_message(chat_id=chat_id, message_id=text_id)
+        except (TelegramBadRequest, TelegramNetworkError, TypeError):
+            pass
+        text_msg = await callback.bot.send_message(
+            chat_id=chat_id,
+            text=built.choose_text,
+            reply_markup=built.keyboard,
+        )
+        final_text_id = text_msg.message_id
+
+    common = min(len(photos), len(media_ids))
+    for i in range(common):
+        url, cap = photos[i]
+        try:
+            await callback.bot.edit_message_media(
+                chat_id=chat_id,
+                message_id=media_ids[i],
+                media=InputMediaPhoto(media=url, caption=cap, parse_mode="HTML"),
+            )
+        except TelegramBadRequest as e:
+            logger.warning(
+                "Не удалось обновить превью каталога message_id={}: {}",
+                media_ids[i],
+                e,
+            )
+
+    new_media_ids = list(media_ids[:common])
+    for mid in media_ids[common:]:
         try:
             await callback.bot.delete_message(chat_id=chat_id, message_id=mid)
         except (TelegramBadRequest, TelegramNetworkError, TypeError):
             continue
-    await _render_products_page(
-        bot=callback.bot,
-        chat_id=chat_id,
-        db=db,
-        category_id=category_id,
-        page=page,
-        state=state,
+
+    if len(photos) > common:
+        extra_media = [InputMediaPhoto(type="photo", media=ph, caption=cap) for ph, cap in photos[common:]]
+        try:
+            sent = await callback.bot.send_media_group(chat_id=chat_id, media=extra_media)
+            new_media_ids.extend(m.message_id for m in sent)
+        except TelegramBadRequest as e:
+            logger.warning(
+                "Не удалось дослать медиа-группу категории category_id={}: {}",
+                category_id,
+                e,
+            )
+
+    await state.update_data(
+        catalog_message_ids=new_media_ids + [final_text_id],
+        catalog_category_id=category_id,
+        catalog_page=page,
+        catalog_chat_id=chat_id,
     )
 
 

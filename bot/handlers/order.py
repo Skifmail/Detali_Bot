@@ -27,11 +27,12 @@ from ..keyboards.kb import (
     build_delivery_choice_keyboard,
     build_delivery_time_keyboard,
     build_email_choice_keyboard,
+    build_main_menu_keyboard,
     build_order_confirmation_keyboard,
     build_recipient_choice_keyboard,
     build_saved_recipients_keyboard,
 )
-from ..utils import get_db_from_callback, get_db_from_message, normalize_phone
+from ..utils import get_db_from_callback, get_db_from_message, is_admin, normalize_phone
 
 # Варианты доставки: (slug, название, стоимость ₽, сообщение о сроках)
 DELIVERY_OPTIONS: list[tuple[str, str, int, str]] = [
@@ -71,7 +72,7 @@ DELIVERY_OPTIONS: list[tuple[str, str, int, str]] = [
         "pickup",
         "Самовывоз",
         0,
-        "🏪 Вы можете забрать свой заказ сами из нашего магазина. " "Предварительно оформите заказ на нашем сайте.",
+        "🏪 Вы можете забрать свой заказ сами из нашего магазина. Предварительно оформите заказ на нашем сайте.",
     ),
 ]
 
@@ -94,13 +95,13 @@ TEXTS: dict[str, str] = {
     "ask_delivery_datetime": "📅 Выберите дату доставки:",
     "ask_delivery_time": "🕐 Выберите желаемое время доставки (с 9:00 до 19:00) или введите вручную:",
     "ask_delivery_time_manual": (
-        "✏️ Введите время доставки в формате ЧЧ:ММ\n" "Например: 14:30. Доступно с 9:00 до 19:00."
+        "✏️ Введите время доставки в формате ЧЧ:ММ\nНапример: 14:30. Доступно с 9:00 до 19:00."
     ),
     "invalid_delivery_time": "⚠️ Неверный формат или время вне интервала 9:00–19:00. Введите ЧЧ:ММ, например 14:30.",
     "delivery_time_past": "⚠️ Выбранное время уже прошло. Выберите другое время или другую дату.",
     "delivery_today_ended": "На сегодня время доставки закончилось (приём до 19:00). Выберите другую дату.",
     "invalid_delivery_datetime": (
-        "⚠️ Неверный формат. Введите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ\n" "Например: 15.03.2025 14:00"
+        "⚠️ Неверный формат. Введите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ\nНапример: 15.03.2025 14:00"
     ),
     "date_past_alert": "Нельзя выбрать прошедшую дату. Выберите сегодня или любой следующий день.",
     "ask_comment": "✏️ Добавьте комментарий к заказу (или отправьте «-», чтобы пропустить):",
@@ -129,7 +130,7 @@ TEXTS: dict[str, str] = {
         "с политикой обработки персональных данных."
     ),
     "summary_item": "• {title} — {price} ₽ × {qty} = {line_total} ₽",
-    "empty_cart": "🛒 Ваша корзина пуста, оформить заказ нельзя.\n" "Добавьте товары из каталога.",
+    "empty_cart": "🛒 Ваша корзина пуста, оформить заказ нельзя.\nДобавьте товары из каталога.",
     "cart_no_opencart_products": (
         "🛒 В корзине нет товаров из каталога сайта — заказ не попадёт в магазин. "
         "Удалите устаревшие позиции и добавьте товары из каталога."
@@ -151,6 +152,17 @@ DELIVERY_DATETIME_REGEX = re.compile(r"^\s*(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1
 PICKUP_ADDRESS = "Самовывоз"
 
 router = Router(name="order")
+
+
+async def _restore_main_menu_for_user(message: Message) -> None:
+    """Возвращает пользователю главное меню с reply-клавиатурой."""
+
+    user = message.from_user
+    is_admin_flag = bool(user is not None and is_admin(user.id, message.bot))
+    await message.answer(
+        "🏠 Главное меню.",
+        reply_markup=build_main_menu_keyboard(is_admin=is_admin_flag),
+    )
 
 
 class OrderForm(StatesGroup):
@@ -359,6 +371,7 @@ async def _ask_address(
     *,
     bot: Bot | None = None,
     chat_id: int | None = None,
+    edit_message: Message | None = None,
 ) -> None:
     """Запускает шаг выбора или ввода адреса доставки (после выбора города).
 
@@ -370,12 +383,19 @@ async def _ask_address(
         state (FSMContext): Контекст FSM.
         bot (Bot | None): Бот для отправки (если message не передан).
         chat_id (int | None): ID чата (если message не передан).
+        edit_message (Message | None): Сообщение, которое можно отредактировать вместо отправки нового.
 
     Returns:
         None: Ничего не возвращает.
     """
 
     async def _send(text: str, reply_markup: object | None = None) -> None:
+        if edit_message is not None:
+            try:
+                await edit_message.edit_text(text, reply_markup=reply_markup)
+                return
+            except TelegramBadRequest:
+                pass
         if message is not None:
             await message.answer(text, reply_markup=reply_markup)
         elif bot is not None and chat_id is not None:
@@ -495,8 +515,7 @@ async def handle_checkout_start(
     )
     for idx, item in enumerate(cart_items):
         logger.info(
-            "  Корзина[{idx}]: product_id={product_id}, title={title!r}, "
-            "opencart_product_id={oc_id}, quantity={qty}",
+            "  Корзина[{idx}]: product_id={product_id}, title={title!r}, opencart_product_id={oc_id}, quantity={qty}",
             idx=idx,
             product_id=item.product.id,
             title=(item.product.title or "")[:60],
@@ -1168,14 +1187,17 @@ async def handle_time_picked(
     data = await state.get_data()
     order_date = data.get("order_date") or ""
     if not order_date or len(order_date) != 10:
-        await callback.message.answer(TEXTS["ask_delivery_datetime"])
-        await callback.message.answer(
-            "Используйте календарь для выбора даты.",
-            reply_markup=build_delivery_calendar_keyboard(
-                year=date_type.today().year,
-                month=date_type.today().month,
-            ),
-        )
+        today = date_type.today()
+        try:
+            await callback.message.edit_text(
+                TEXTS["ask_delivery_datetime"],
+                reply_markup=build_delivery_calendar_keyboard(year=today.year, month=today.month),
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                TEXTS["ask_delivery_datetime"],
+                reply_markup=build_delivery_calendar_keyboard(year=today.year, month=today.month),
+            )
         return
     try:
         y, m, d = map(int, order_date.split("-"))
@@ -1238,12 +1260,7 @@ async def handle_delivery_picked(
     if option is None:
         return
 
-    _slug, city_name, delivery_cost, message_text = option
-
-    try:
-        await callback.message.edit_text(message_text, parse_mode="Markdown")
-    except TelegramBadRequest:
-        await callback.message.answer(message_text, parse_mode="Markdown")
+    _slug, city_name, delivery_cost, _message_text = option
 
     data = await state.get_data()
     if slug == "pickup":
@@ -1264,13 +1281,30 @@ async def handle_delivery_picked(
                 address=PICKUP_ADDRESS,
             )
             await state.update_data(name=r_name, phone=r_phone)
-        await _ask_delivery_datetime(message=callback.message, state=state)
+        today = date_type.today()
+        try:
+            await callback.message.edit_text(
+                TEXTS["ask_delivery_datetime"],
+                reply_markup=build_delivery_calendar_keyboard(year=today.year, month=today.month),
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                TEXTS["ask_delivery_datetime"],
+                reply_markup=build_delivery_calendar_keyboard(year=today.year, month=today.month),
+            )
+        await state.set_state(OrderForm.desired_datetime)
     else:
         await state.update_data(
             delivery_city=city_name,
             delivery_cost=delivery_cost,
         )
-        await _ask_address(message=callback.message, state=state)
+        await _ask_address(
+            message=None,
+            state=state,
+            bot=callback.bot,
+            chat_id=callback.message.chat.id,
+            edit_message=callback.message,
+        )
 
 
 @router.message(OrderForm.comment)
@@ -1374,7 +1408,10 @@ async def handle_email_choice_enter_new(
     await callback.answer()
     if callback.message is None:
         return
-    await callback.message.answer(TEXTS["ask_email"])
+    try:
+        await callback.message.edit_text(TEXTS["ask_email"], reply_markup=None)
+    except TelegramBadRequest:
+        await callback.message.answer(TEXTS["ask_email"])
     await state.set_state(OrderForm.email)
 
 
@@ -1549,6 +1586,7 @@ async def handle_order_cancel(
             await callback.message.edit_text(text=TEXTS["cancelled"])
         except TelegramBadRequest:
             await callback.message.answer(TEXTS["cancelled"])
+        await _restore_main_menu_for_user(callback.message)
 
 
 @router.callback_query(F.data == "order:confirm")
@@ -1609,6 +1647,7 @@ async def handle_order_confirm(
             "Не удалось зафиксировать email для заказа. Попробуйте оформить заказ заново.",
         )
         await state.clear()
+        await _restore_main_menu_for_user(callback.message)
         return
     email = str(email).strip()
 
@@ -1640,6 +1679,7 @@ async def handle_order_confirm(
             user_id=user_db_id,
         )
         await callback.answer(TEXTS["empty_cart"], show_alert=True)
+        await _restore_main_menu_for_user(callback.message)
         return
 
     # Заказ в OpenCart создаётся: при наличных — в handle_payment_method_cash после выбора способа;

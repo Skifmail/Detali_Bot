@@ -272,14 +272,12 @@ async def handle_account_entry(message: Message) -> None:
         orders_count=orders_count,
         total_spent=total_spent,
     )
-    await message.answer(profile_text)
-
     if not orders:
-        await message.answer(TEXTS["no_orders"])
+        await message.answer(profile_text + "\n\n" + TEXTS["no_orders"])
         return
 
     await message.answer(
-        TEXTS["orders_header"],
+        profile_text + "\n\n" + TEXTS["orders_header"],
         reply_markup=build_account_orders_keyboard(orders=orders),
     )
 
@@ -321,5 +319,8 @@ async def handle_repeat_order(callback: CallbackQuery) -> None:
             delta=item.quantity,
         )
 
-    await callback.message.answer(TEXTS["repeat_done"])
+    try:
+        await callback.message.edit_text(TEXTS["repeat_done"], reply_markup=None)
+    except TelegramBadRequest:
+        await callback.message.answer(TEXTS["repeat_done"])
     await _show_cart(callback.message, from_user=callback.from_user)

@@ -75,8 +75,8 @@ TEXTS: dict[str, str] = {
     "order_item": "• {title} — {price} ₽ × {qty} = {line_total} ₽",
     "new_order_notification_title": "🆕 Новый заказ #{display_number}",
     "status_changed": "✅ Статус заказа обновлён: {status}",
-    "status_notification": ("🔔 Обновление статуса заказа #{display_number}\n\n" "Новый статус: {status}"),
-    "stats": ("📊 Статистика магазина\n\n" "Пользователей: {users}\n" "Заказов: {orders}\n" "Выручка: {revenue} ₽"),
+    "status_notification": ("🔔 Обновление статуса заказа #{display_number}\n\nНовый статус: {status}"),
+    "stats": ("📊 Статистика магазина\n\nПользователей: {users}\nЗаказов: {orders}\nВыручка: {revenue} ₽"),
     "broadcast_prompt": (
         "📣 Рассылка\n\n"
         "Отправьте сообщение для рассылки: фото с подписью или только текст.\n"
@@ -99,9 +99,7 @@ TEXTS: dict[str, str] = {
     "admins_list_env": "SuperAdmin: {ids}",
     "admins_list_db": "Добавлены через бота: {ids}",
     "admins_list_all": "Всего: {ids}",
-    "admins_add_prompt": (
-        "Введите Telegram ID пользователя (целое число). " "Узнать ID: @userinfobot или бот Get My ID."
-    ),
+    "admins_add_prompt": ("Введите Telegram ID пользователя (целое число). Узнать ID: @userinfobot или бот Get My ID."),
     "admins_add_ok": "✅ Пользователь {user_id} добавлен в список администраторов.",
     "admins_add_already": "Пользователь {user_id} уже является администратором.",
     "admins_remove_ok": "✅ Пользователь {user_id} удалён из списка администраторов (из бота).",
@@ -123,8 +121,7 @@ TEXTS: dict[str, str] = {
     "order_message_sent": "✅ Сообщение отправлено клиенту.",
     "order_message_no_user": "Не удалось отправить: клиент не найден (нет Telegram).",
     "contact_edit_prompt": (
-        "📞 До 5 контактов для связи с клиентами. "
-        "Отправьте контакт (добавить), «удалить N», «очистить» или «готово»."
+        "📞 До 5 контактов для связи с клиентами. Отправьте контакт (добавить), «удалить N», «очистить» или «готово»."
     ),
     "contact_edit_list": "Текущие контакты ({count}/5):\n{list}",
     "contact_edit_empty": "Нет контактов.",
@@ -136,7 +133,7 @@ TEXTS: dict[str, str] = {
     "contact_edit_full": "Достигнут лимит (5 контактов). Удалите один: «удалить N».",
     "contact_edit_bad_delete": "Укажите номер контакта от 1 до {max}: «удалить 1».",
     "client_message_header": (
-        "📦 Сообщение по заказу #{display_number}\n\n{admin_message}\n\n" "📞 Связаться с нами:\n{admin_contacts}"
+        "📦 Сообщение по заказу #{display_number}\n\n{admin_message}\n\n📞 Связаться с нами:\n{admin_contacts}"
     ),
     "client_message_no_contact": (
         "📦 Сообщение по заказу #{display_number}\n\n{admin_message}\n\n"
@@ -548,9 +545,9 @@ async def handle_admin_contact_message(
     bot = message.bot
     chat_id = message.chat.id
     await delete_tracked_admin_messages(bot, chat_id)
-    m1 = await message.answer(_format_admin_contacts_list(contacts))
-    m2 = await message.answer(TEXTS["contact_edit_prompt"])
-    track_admin_messages(bot, chat_id, [m1.message_id, m2.message_id])
+    combined = _format_admin_contacts_list(contacts) + "\n\n" + TEXTS["contact_edit_prompt"]
+    m1 = await message.answer(combined)
+    track_admin_messages(bot, chat_id, [m1.message_id])
 
 
 @router.message(F.text == KB_TEXTS["menu_sync_catalog"])
@@ -566,14 +563,26 @@ async def handle_admin_sync_catalog_message(message: Message) -> None:
     try:
         summary = await sync_catalog_from_opencart(db)
         summary_text = _format_catalog_summary(summary)
-        m2 = await message.answer(TEXTS["sync_catalog_ok"].format(summary=summary_text))
-        track_admin_messages(bot, chat_id, [m1.message_id, m2.message_id])
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=m1.message_id,
+                text=TEXTS["sync_catalog_ok"].format(summary=summary_text),
+            )
+        except TelegramBadRequest:
+            pass
+        track_admin_messages(bot, chat_id, [m1.message_id])
     except Exception as e:
         logger.exception("Ошибка синхронизации каталога по запросу админа")
-        m2 = await message.answer(
-            TEXTS["sync_catalog_fail"].format(error=str(e)),
-        )
-        track_admin_messages(bot, chat_id, [m1.message_id, m2.message_id])
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=m1.message_id,
+                text=TEXTS["sync_catalog_fail"].format(error=str(e)),
+            )
+        except TelegramBadRequest:
+            pass
+        track_admin_messages(bot, chat_id, [m1.message_id])
 
 
 @router.message(F.text == KB_TEXTS["menu_users"])
@@ -681,14 +690,20 @@ async def handle_admin_export_orders_period(callback: CallbackQuery) -> None:
     db = get_db_from_callback(callback)
     orders = db.list_orders_between(from_dt=from_dt, to_dt=to_dt)
     if not orders:
-        await callback.message.answer(TEXTS["export_orders_empty"])
+        try:
+            await callback.message.edit_text(TEXTS["export_orders_empty"])
+        except TelegramBadRequest:
+            await callback.message.answer(TEXTS["export_orders_empty"])
         return
     csv_bytes = _orders_to_csv(orders)
     date_str = now.strftime("%Y-%m-%d")
     filename = f"orders_{label}_{date_str}.csv"
     doc = BufferedInputFile(csv_bytes, filename=filename)
+    try:
+        await callback.message.edit_text(TEXTS["export_orders_done"].format(count=len(orders)))
+    except TelegramBadRequest:
+        pass
     await callback.message.answer_document(document=doc)
-    await callback.message.answer(TEXTS["export_orders_done"].format(count=len(orders)))
 
 
 @router.callback_query(F.data.startswith("admin:order_message:"))
@@ -717,9 +732,12 @@ async def handle_admin_order_message_start(
         await callback.message.answer("Заказ не найден.")
         return
     await state.set_state(AdminOrderMessageForm.message)
-    prompt_msg = await callback.message.answer(
-        TEXTS["order_message_prompt"].format(display_number=order.display_order_number),
-    )
+    prompt_text = TEXTS["order_message_prompt"].format(display_number=order.display_order_number)
+    try:
+        await callback.message.edit_text(prompt_text, reply_markup=None)
+        prompt_msg = callback.message
+    except TelegramBadRequest:
+        prompt_msg = await callback.message.answer(prompt_text)
     await state.update_data(
         admin_order_message_order_id=order_id,
         admin_order_message_prompt_message_id=prompt_msg.message_id,
@@ -821,8 +839,8 @@ async def handle_admin_contact_edit_start(
     db = get_db_from_callback(callback)
     contacts = db.get_admin_contacts()
     await state.set_state(AdminContactForm.contact)
-    await callback.message.answer(_format_admin_contacts_list(contacts))
-    await callback.message.answer(TEXTS["contact_edit_prompt"])
+    combined = _format_admin_contacts_list(contacts) + "\n\n" + TEXTS["contact_edit_prompt"]
+    await callback.message.answer(combined)
 
 
 @router.message(AdminContactForm.contact)
@@ -854,8 +872,7 @@ async def handle_admin_contact_edit_text(
     delete_prefix = "удалить "
     if raw.lower().startswith(delete_prefix):
         if not contacts:
-            await message.answer(TEXTS["contact_edit_empty"])
-            await message.answer(TEXTS["contact_edit_prompt"])
+            await message.answer(TEXTS["contact_edit_empty"] + "\n\n" + TEXTS["contact_edit_prompt"])
             return
         num_str = raw[len(delete_prefix) :].strip()
         try:
@@ -865,31 +882,32 @@ async def handle_admin_contact_edit_text(
         if 1 <= idx <= len(contacts):
             contacts.pop(idx - 1)
             db.set_admin_contacts(contacts)
-            await message.answer(TEXTS["contact_edit_removed"])
-            await message.answer(_format_admin_contacts_list(db.get_admin_contacts()))
-            await message.answer(TEXTS["contact_edit_prompt"])
+            updated_list = _format_admin_contacts_list(db.get_admin_contacts())
+            await message.answer(
+                TEXTS["contact_edit_removed"] + "\n\n" + updated_list + "\n\n" + TEXTS["contact_edit_prompt"],
+            )
         else:
             await message.answer(
-                TEXTS["contact_edit_bad_delete"].format(max=len(contacts) or 1),
+                TEXTS["contact_edit_bad_delete"].format(max=len(contacts) or 1) + "\n\n" + TEXTS["contact_edit_prompt"],
             )
-            await message.answer(TEXTS["contact_edit_prompt"])
         return
 
     if not raw:
-        await message.answer(_format_admin_contacts_list(contacts))
-        await message.answer(TEXTS["contact_edit_prompt"])
+        await message.answer(
+            _format_admin_contacts_list(contacts) + "\n\n" + TEXTS["contact_edit_prompt"],
+        )
         return
 
     if len(contacts) >= Database.ADMIN_CONTACTS_MAX:
-        await message.answer(TEXTS["contact_edit_full"])
-        await message.answer(TEXTS["contact_edit_prompt"])
+        await message.answer(TEXTS["contact_edit_full"] + "\n\n" + TEXTS["contact_edit_prompt"])
         return
 
     contacts.append(raw)
     db.set_admin_contacts(contacts)
-    await message.answer(TEXTS["contact_edit_added"])
-    await message.answer(_format_admin_contacts_list(db.get_admin_contacts()))
-    await message.answer(TEXTS["contact_edit_prompt"])
+    updated_list = _format_admin_contacts_list(db.get_admin_contacts())
+    await message.answer(
+        TEXTS["contact_edit_added"] + "\n\n" + updated_list + "\n\n" + TEXTS["contact_edit_prompt"],
+    )
 
 
 def _format_users_message(users: list[User], total: int, limit: int) -> str:
@@ -1078,7 +1096,10 @@ async def handle_admin_admin_add_start(callback: CallbackQuery, state: FSMContex
     if not is_admin(callback.from_user.id, callback.bot):
         return
     await state.set_state(AdminAdminsForm.add_id)
-    await callback.message.answer(TEXTS["admins_add_prompt"])
+    try:
+        await callback.message.edit_text(TEXTS["admins_add_prompt"], reply_markup=None)
+    except TelegramBadRequest:
+        await callback.message.answer(TEXTS["admins_add_prompt"])
 
 
 @router.message(AdminAdminsForm.add_id, F.text)
@@ -1166,9 +1187,9 @@ async def handle_admin_admin_remove_do(callback: CallbackQuery) -> None:
     db = get_db_from_callback(callback)
     removed = db.remove_bot_admin(user_id)
     _refresh_bot_admin_ids(callback.bot, db)
-    if removed:
-        await callback.message.answer(TEXTS["admins_remove_ok"].format(user_id=user_id))
     text = _format_admins_message(callback.bot, db)
+    if removed:
+        text = TEXTS["admins_remove_ok"].format(user_id=user_id) + "\n\n" + text
     try:
         await callback.message.edit_text(
             text=text,
@@ -1191,16 +1212,23 @@ async def handle_admin_sync_catalog(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id, callback.bot):
         return
     db = get_db_from_callback(callback)
-    await callback.message.answer(TEXTS["sync_catalog_start"])
+    try:
+        await callback.message.edit_text(TEXTS["sync_catalog_start"])
+    except TelegramBadRequest:
+        await callback.message.answer(TEXTS["sync_catalog_start"])
     try:
         summary = await sync_catalog_from_opencart(db)
         summary_text = _format_catalog_summary(summary)
-        await callback.message.answer(TEXTS["sync_catalog_ok"].format(summary=summary_text))
+        try:
+            await callback.message.edit_text(TEXTS["sync_catalog_ok"].format(summary=summary_text))
+        except TelegramBadRequest:
+            await callback.message.answer(TEXTS["sync_catalog_ok"].format(summary=summary_text))
     except Exception as e:
         logger.exception("Ошибка синхронизации каталога по запросу админа")
-        await callback.message.answer(
-            TEXTS["sync_catalog_fail"].format(error=str(e)),
-        )
+        try:
+            await callback.message.edit_text(TEXTS["sync_catalog_fail"].format(error=str(e)))
+        except TelegramBadRequest:
+            await callback.message.answer(TEXTS["sync_catalog_fail"].format(error=str(e)))
 
 
 @router.callback_query(F.data == "nav:back_main")
@@ -1209,12 +1237,22 @@ async def handle_nav_back_main(callback: CallbackQuery) -> None:
     await callback.answer()
     if callback.message is None:
         return
-    is_admin = callback.from_user.id in getattr(callback.bot, "admin_ids", set())
-    await callback.bot.send_message(
-        chat_id=callback.message.chat.id,
-        text="🏠 Главное меню.",
-        reply_markup=build_main_menu_keyboard(is_admin=is_admin),
-    )
+    is_admin_flag = callback.from_user.id in getattr(callback.bot, "admin_ids", set())
+    try:
+        await callback.message.edit_text(
+            text="🏠 Главное меню.",
+            reply_markup=build_main_menu_keyboard(is_admin=is_admin_flag),
+        )
+    except TelegramBadRequest:
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
+        await callback.bot.send_message(
+            chat_id=callback.message.chat.id,
+            text="🏠 Главное меню.",
+            reply_markup=build_main_menu_keyboard(is_admin=is_admin_flag),
+        )
 
 
 @router.callback_query(F.data == "admin:back")
@@ -1866,10 +1904,16 @@ async def handle_admin_broadcast(
         return
 
     await state.set_state(BroadcastForm.content)
-    await callback.message.answer(
-        TEXTS["broadcast_prompt"],
-        reply_markup=_build_broadcast_cancel_keyboard(),
-    )
+    try:
+        await callback.message.edit_text(
+            TEXTS["broadcast_prompt"],
+            reply_markup=_build_broadcast_cancel_keyboard(),
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            TEXTS["broadcast_prompt"],
+            reply_markup=_build_broadcast_cancel_keyboard(),
+        )
 
 
 @router.message(BroadcastForm.content, F.photo)
